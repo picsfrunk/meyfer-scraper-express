@@ -1,14 +1,17 @@
 {
-  "name": "meyfer-scraper-node-docker",
+  "name": "scraper-service",
   "version": "1.0.0",
-  "description": "",
-  "main": "config.js",
+  "description": "Scraper para RHComercial",
+  "main": "scraper.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node scraper.js"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/picsfrunk/meyfer-scraper-node-docker.git"
-  },
-  "private": true
+  "dependencies": {
+    "axios": "^1.6.0",
+    "axios-cookiejar-support": "^2.0.5",
+    "cheerio": "^1.0.0-rc.12",
+    "dotenv": "^16.3.1",
+    "mongodb": "^6.5.0",
+    "tough-cookie": "^4.1.3"
+  }
 }
