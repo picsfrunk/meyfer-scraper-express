@@ -1,7 +1,5 @@
 require('dotenv').config();
 const config = require('./config');
-
-
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { MongoClient } = require('mongodb');
@@ -9,15 +7,17 @@ const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const fs = require('fs');
 const path = require('path');
-
+const express = require('express');
+const app = express();
+app.use(express.json());
 
 // Delay helper
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// Cargar variables de entorno correctamente
+// Configuración desde config.js
 const BASE_URL = config.baseUrl;
-const PAGE_DELAY_MS = config.pageDelay;
-const CATEGORY_DELAY_MS = config.categoryDelay;
+const DEFAULT_PAGE_DELAY_MS = config.pageDelay;
+const DEFAULT_CATEGORY_DELAY_MS = config.categoryDelay;
 const MONGO_URI = config.mongoUrl;
 const MONGO_DB = config.mongoDbName;
 const MONGO_COLLECTION = config.mongoCollection;
@@ -25,47 +25,11 @@ const ODOO_USER = config.odooUser;
 const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
 
-
-
-// Rubros base
-const RUBROS = [
-    { id: 3, name: "Agua", pages: 26 },
-    { id: 4, name: "Electricidad", pages: 1 },
-    { id: 5, name: "Fijaciones", pages: 15 },
-    { id: 6, name: "Gas", pages: 2 },
-    { id: 118, name: "Grifería", pages: 2 },
-    { id: 2, name: "Herramientas", pages: 22 },
-    { id: 1, name: "Hogar/Jardin", pages: 9 },
-    { id: 7, name: "Pinturería", pages: 6 },
-    { id: 8, name: "Químicos", pages: 3 },
-    { id: 116, name: "Repuestos", pages: 1 },
-    { id: 10, name: "Zinguería", pages: 5 },
-    { id: 9, name: "Saldos", pages: 1 },
-];
-
-// CLI parsing
-const args = process.argv.slice(2);
-const options = {
-    rubros: [], // por defecto, todos
-    pageDelay: PAGE_DELAY_MS,
-    categoryDelay: CATEGORY_DELAY_MS
-};
-
-args.forEach(arg => {
-    if (arg.startsWith("--rubros=")) {
-        const val = arg.split("=")[1];
-        options.rubros = val === 'all' ? 'all' : val.split(',').map(Number);
-    }
-    if (arg.startsWith("--pageDelay=")) {
-        options.pageDelay = parseInt(arg.split("=")[1]);
-    }
-    if (arg.startsWith("--categoryDelay=")) {
-        options.categoryDelay = parseInt(arg.split("=")[1]);
-    }
-});
+// Cargar rubros desde archivo externo
+const RUBROS = require('./rubros');
 
 // Logging
-const LOG_DIR = path.join(__dirname, "logs");
+const LOG_DIR = path.join(__dirname, 'logs');
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
 const LOG_FILE = path.join(LOG_DIR, `update-${new Date().toISOString().slice(0, 10)}.log`);
 function logToFile(message) {
@@ -80,23 +44,23 @@ const client = wrapper(axios.create({ jar, withCredentials: true }));
 async function loginToOdoo() {
     try {
         const res = await client.post(`${BASE_URL}/web/session/authenticate`, {
-            jsonrpc: "2.0",
-            method: "call",
+            jsonrpc: '2.0',
+            method: 'call',
             params: {
                 db: ODOO_DB,
                 login: ODOO_USER,
                 password: ODOO_PASS,
-            }
+            },
         }, {
-            headers: { "Content-Type": "application/json" }
+            headers: { 'Content-Type': 'application/json' },
         });
 
         if (res.data.result?.uid) {
-            console.log("✔ Login exitoso como:", ODOO_USER);
+            console.log('✔ Login exitoso como:', ODOO_USER);
             logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
             return true;
         } else {
-            logToFile("❌ Falló el login.");
+            logToFile('❌ Falló el login.');
             return false;
         }
     } catch (err) {
@@ -112,13 +76,13 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
         const $ = cheerio.load(res.data);
         const products = [];
 
-        $("form.oe_product_cart").each((_, el) => {
+        $('form.oe_product_cart').each((_, el) => {
             const product_id = $(el).find("input[name='product_id']").val();
             const product_template_id = $(el).find("input[name='product_template_id']").val();
             if (product_id && product_template_id) {
                 products.push({
                     product_id: Number(product_id),
-                    product_template_id: Number(product_template_id)
+                    product_template_id: Number(product_template_id),
                 });
             }
         });
@@ -136,8 +100,8 @@ async function getProductDetails(product, categoryId, categoryName) {
             `${BASE_URL}/website_sale/get_combination_info`,
             {
                 id: 3,
-                jsonrpc: "2.0",
-                method: "call",
+                jsonrpc: '2.0',
+                method: 'call',
                 params: {
                     product_template_id: product.product_template_id,
                     product_id: product.product_id,
@@ -148,20 +112,18 @@ async function getProductDetails(product, categoryId, categoryName) {
             },
             {
                 headers: {
-                    "Content-Type": "application/json",
+                    'Content-Type': 'application/json',
                     Referer: `${BASE_URL}/shop/${product.product_template_id}`,
                 },
             }
         );
 
         const data = response.data.result;
-        const $ = cheerio.load(data.carousel || "");
-        const imageUrl = $("img").attr("src")
-            ? `${BASE_URL}${$("img").attr("src")}`
-            : null;
+        const $ = cheerio.load(data.carousel || '');
+        const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
 
         const brandMatch = data.display_name.match(/"(.*?)"/);
-        const brand = brandMatch ? brandMatch[1].trim() : "generico";
+        const brand = brandMatch ? brandMatch[1].trim() : 'generico';
 
         return {
             product_id: data.product_id,
@@ -172,7 +134,7 @@ async function getProductDetails(product, categoryId, categoryName) {
             product_type: data.product_type,
             category_id: categoryId,
             category_name: categoryName,
-            brand: brand
+            brand: brand,
         };
     } catch (error) {
         logToFile(`❌ Error detalle producto ${product.product_id}: ${error.message}`);
@@ -180,20 +142,18 @@ async function getProductDetails(product, categoryId, categoryName) {
     }
 }
 
-// MAIN
-async function main() {
+async function runScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS }) {
     const rubrosFiltrados =
-        options.rubros === 'all' || options.rubros.length === 0
+        rubros === 'all' || rubros.length === 0
             ? RUBROS
-            : RUBROS.filter(r => options.rubros.includes(r.id));
+            : RUBROS.filter(r => rubros.includes(r.id));
 
     if (!rubrosFiltrados.length) {
-        console.error("⚠️ Ningún rubro coincide.");
-        return;
+        throw new Error('⚠️ Ningún rubro coincide.');
     }
 
     const loggedIn = await loginToOdoo();
-    if (!loggedIn) return;
+    if (!loggedIn) throw new Error('Login fallido');
 
     const mongo = new MongoClient(MONGO_URI);
     await mongo.connect();
@@ -222,19 +182,30 @@ async function main() {
                     );
                     total++;
                     logToFile(`✔ Guardado: ${details.product_id} - ${details.display_name}`);
+                    console.log(`\t\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
                 }
-                await delay(options.pageDelay);
+                await delay(pageDelay);
             }
         }
-        await delay(options.categoryDelay);
+        await delay(categoryDelay);
     }
 
     await mongo.close();
     logToFile(`✅ Finalizado. Total productos: ${total}`);
-    console.log("✅ Finalizado. Productos procesados:", total);
+    return total;
 }
 
-main().catch(err => {
-    logToFile(`❌ Error general: ${err.message}`);
-    console.error(err);
-})
+// HTTP POST listener
+app.post('/', async (req, res) => {
+    try {
+        const { rubros = 'all', pageDelay, categoryDelay } = req.body;
+        const total = await runScraper({ rubros, pageDelay, categoryDelay });
+        res.status(200).json({ status: 'ok', processed: total });
+    } catch (err) {
+        logToFile(`❌ Error general: ${err.message}`);
+        res.status(500).json({ status: 'error', message: err.message });
+    }
+});
+
+const PORT = process.env.PORT || 8081;
+app.listen(PORT, () => console.log(`🚀 Scraper listening on port ${PORT}`));
