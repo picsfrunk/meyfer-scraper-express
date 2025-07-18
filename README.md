@@ -5,7 +5,7 @@ Scraper para obtener productos desde RHComercial.com.ar y guardarlos en MongoDB.
 ## Uso
 
 ```bash
-node scraper.js --rubros=3,5 --pageDelay=800
+node categoryScraper.js --rubros=3,5 --pageDelay=800
 ```
 
 ## Variables de entorno

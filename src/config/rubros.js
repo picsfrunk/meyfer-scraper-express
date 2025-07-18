@@ -1,4 +1,4 @@
-module.exports = [
+const RUBROS = [
     { id: 3, name: "Agua", pages: 26 },
     { id: 4, name: "Electricidad", pages: 1 },
     { id: 5, name: "Fijaciones", pages: 15 },
@@ -12,3 +12,5 @@ module.exports = [
     { id: 10, name: "Zinguería", pages: 5 },
     { id: 9, name: "Saldos", pages: 1 },
 ];
+
+module.exports = RUBROS

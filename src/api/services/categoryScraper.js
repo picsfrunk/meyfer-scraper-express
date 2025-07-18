@@ -1,15 +1,11 @@
 require('dotenv').config();
-const config = require('./config');
+const config = require('../../config/config');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { MongoClient } = require('mongodb');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
-const fs = require('fs');
-const path = require('path');
-const express = require('express');
-const app = express();
-app.use(express.json());
+const logToFile = require('../../utils/logToFile');
 
 // Delay helper
 const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -26,16 +22,7 @@ const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
 
 // Cargar rubros desde archivo externo
-const RUBROS = require('./rubros');
-
-// Logging
-const LOG_DIR = path.join(__dirname, 'logs');
-if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR);
-const LOG_FILE = path.join(LOG_DIR, `update-${new Date().toISOString().slice(0, 10)}.log`);
-function logToFile(message) {
-    const timestamp = new Date().toISOString();
-    fs.appendFileSync(LOG_FILE, `[${timestamp}] ${message}\n`);
-}
+const RUBROS = require('../../config/rubros');
 
 // Axios con cookies
 const jar = new tough.CookieJar();
@@ -142,7 +129,7 @@ async function getProductDetails(product, categoryId, categoryName) {
     }
 }
 
-async function runScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS }) {
+async function runCategoryScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS }) {
     const rubrosFiltrados =
         rubros === 'all' || rubros.length === 0
             ? RUBROS
@@ -195,17 +182,4 @@ async function runScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, c
     return total;
 }
 
-// HTTP POST listener
-app.post('/', async (req, res) => {
-    try {
-        const { rubros = 'all', pageDelay, categoryDelay } = req.body;
-        const total = await runScraper({ rubros, pageDelay, categoryDelay });
-        res.status(200).json({ status: 'ok', processed: total });
-    } catch (err) {
-        logToFile(`❌ Error general: ${err.message}`);
-        res.status(500).json({ status: 'error', message: err.message });
-    }
-});
-
-const PORT = process.env.PORT || 8081;
-app.listen(PORT, () => console.log(`🚀 Scraper listening on port ${PORT}`));
+module.exports = { runCategoryScraper };
