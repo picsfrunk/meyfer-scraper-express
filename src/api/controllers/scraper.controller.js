@@ -1,23 +1,75 @@
-const scraperService = require('../services/scraper.service');
+const { scraperService } = require('../services/scraper.service');
+const { sendWebhook } = require('../services/webhook.service');
 
 const runCategoryScraper = async (req, res) => {
     try {
-        const { rubros = 'all', pageDelay, categoryDelay } = req.body;
-        const total = await scraperService.runCategoryScraper(rubros, pageDelay, categoryDelay);
-        res.status(200).json({ status: 'ok', processed: total });
+        const { rubros = 'all', pageDelay, categoryDelay, webhookUrl } = req.body;
+
+        res.status(202).json({ status: 'accepted', message: 'Scraper started' });
+
+        scraperService.runCategoryScraper(rubros, pageDelay, categoryDelay)
+            .then(total => {
+                if (webhookUrl) {
+                    sendWebhook(webhookUrl, {
+                        status: 'completed',
+                        source: 'category',
+                        processed: total,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            })
+            .catch(err => {
+                console.error('Scraper error:', err);
+                if (webhookUrl) {
+                    sendWebhook(webhookUrl, {
+                        status: 'error',
+                        source: 'category',
+                        message: err.message,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            });
+
     } catch (error) {
         console.error('Error en controller:', error);
-        res.status(500).json({ status: 'error', message: error.message });    }
-}
-
-async function runSitemapScraper(req, res) {
-    try {
-        const result = await scraperService.runSitemapScraper();
-        res.json({ success: true, result });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ status: 'error', message: error.message });
     }
-}
+};
+
+const runSitemapScraper = async (req, res) => {
+    try {
+        const { webhookUrl } = req.body;
+
+        res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
+
+        scraperService.runSitemapScraper()
+            .then(result => {
+                if (webhookUrl) {
+                    sendWebhook(webhookUrl, {
+                        status: 'completed',
+                        source: 'sitemap',
+                        result,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            })
+            .catch(err => {
+                console.error('Sitemap scraper error:', err);
+                if (webhookUrl) {
+                    sendWebhook(webhookUrl, {
+                        status: 'error',
+                        source: 'sitemap',
+                        message: err.message,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            });
+
+    } catch (error) {
+        console.error('Error en controller (sitemap):', error);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+};
 
 module.exports = {
     runCategoryScraper,

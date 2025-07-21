@@ -12,6 +12,11 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
+//Webhooks
+const webhookRoutes = require('./api/routes/webhook.route');
+app.use('/api/webhook', webhookRoutes);
+
+
 // Routes
 const scraperRoutes = require('./api/routes/scraper.route');
 

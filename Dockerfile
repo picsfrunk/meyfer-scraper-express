@@ -9,4 +9,4 @@ COPY . .
 
 ENV NODE_ENV=production
 
-CMD ["node", "categoryScraper.js"]
+CMD ["node", "/src/server.js"]
