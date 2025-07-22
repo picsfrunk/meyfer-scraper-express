@@ -1,4 +1,4 @@
-const { scraperService } = require('../services/scraper.service');
+const ScraperService = require('../services/scraper.service');
 const { sendWebhook } = require('../services/webhook.service');
 
 const runCategoryScraper = async (req, res) => {
@@ -7,7 +7,7 @@ const runCategoryScraper = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Scraper started' });
 
-        scraperService.runCategoryScraper(rubros, pageDelay, categoryDelay)
+        ScraperService.categoryScraper({rubros, pageDelay, categoryDelay})
             .then(total => {
                 if (webhookUrl) {
                     sendWebhook(webhookUrl, {
@@ -42,7 +42,7 @@ const runSitemapScraper = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
-        scraperService.runSitemapScraper()
+        ScraperService.sitemapScraper()
             .then(result => {
                 if (webhookUrl) {
                     sendWebhook(webhookUrl, {

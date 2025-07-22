@@ -1,13 +1,11 @@
 const axios = require('axios');
 
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-
-const sendWebhook = async (payload) => {
+const sendWebhook = async (webhookUrl, payload) => {
     try {
-        const response = await axios.post(WEBHOOK_URL, payload);
+        const response = await axios.post(webhookUrl, payload);
         return response.data;
     } catch (error) {
-        console.error('Error sending webhook:', error.message);
+        console.error('Error sending webhook to:', webhookUrl, "Error: ", error.message);
         throw new Error('Failed to send webhook');
     }
 };

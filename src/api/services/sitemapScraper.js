@@ -21,16 +21,22 @@ async function fetchSitemapUrls() {
         const { data } = await axios.get(`${BASE_URL}/sitemap.xml`);
         const urls = [];
         const $ = cheerio.load(data, { xmlMode: true });
+
         $('url > loc').each((_, el) => {
             const loc = $(el).text();
-            if (loc.includes('/shop/producto/')) urls.push(loc);
+            if (loc.includes('/shop/')) {
+                urls.push(loc);
+                if (urls.length === 10) return false; // corta el .each de cheerio
+            }
         });
+
         return urls;
     } catch (err) {
         logToFile(`❌ Error al obtener sitemap: ${err.message}`);
         return [];
     }
 }
+
 
 async function scrapeProductFromUrl(url) {
     try {

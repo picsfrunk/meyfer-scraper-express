@@ -2,10 +2,10 @@ const { runCategoryScraper } = require('./categoryScraper');
 const { runSitemapScraper } = require("./sitemapScraper");
 
 
-exports.runCategoryScraper = async ({ rubros = "4", pageDelay, categoryDelay }) => {
+exports.categoryScraper = async ({ rubros = "4", pageDelay, categoryDelay }) => {
     return await runCategoryScraper({ rubros, pageDelay, categoryDelay });
 };
 
-exports.runSitemapScraper = async () => {
+exports.sitemapScraper = async () => {
     return await runSitemapScraper();
 }

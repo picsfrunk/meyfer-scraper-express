@@ -130,10 +130,9 @@ async function getProductDetails(product, categoryId, categoryName) {
 }
 
 async function runCategoryScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS }) {
-    const rubrosFiltrados =
-        rubros === 'all' || rubros.length === 0
-            ? RUBROS
-            : RUBROS.filter(r => rubros.includes(r.id));
+    const rubrosFiltrados = rubros === "all"
+        ? RUBROS
+        : RUBROS.filter(r => r.id === parseInt(rubros));
 
     if (!rubrosFiltrados.length) {
         throw new Error('⚠️ Ningún rubro coincide.');
