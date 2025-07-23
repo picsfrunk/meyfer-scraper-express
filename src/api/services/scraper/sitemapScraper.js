@@ -5,7 +5,7 @@ const cheerio = require('cheerio');
 const { MongoClient } = require('mongodb');
 const fs = require('fs');
 const path = require('path');
-const { logToFile } = require('../../../utils/logToFile');
+const logToFile = require('../../../utils/logToFile');
 const config = require('../../../config/config');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));

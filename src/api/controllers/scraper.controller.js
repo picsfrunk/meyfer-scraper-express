@@ -21,28 +21,7 @@ const runSitemapScraper = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
-        ScraperService.sitemapScraper()
-            .then(result => {
-                if (webhookUrl) {
-                    sendWebhook(webhookUrl, {
-                        status: 'completed',
-                        source: 'sitemap',
-                        result,
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            })
-            .catch(err => {
-                console.error('Sitemap scraper error:', err);
-                if (webhookUrl) {
-                    sendWebhook(webhookUrl, {
-                        status: 'error',
-                        source: 'sitemap',
-                        message: err.message,
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            });
+        await ScraperService.sitemapScraper({webhookUrl})
 
     } catch (error) {
         console.error('Error en controller (sitemap):', error);
