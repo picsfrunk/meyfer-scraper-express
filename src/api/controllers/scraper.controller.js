@@ -17,11 +17,11 @@ const runCategoryScraper = async (req, res) => {
 
 const runSitemapScraper = async (req, res) => {
     try {
-        const { webhookUrl } = req.body;
+        const { pageDelay, webhookUrl } = req.body;
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
-        await ScraperService.sitemapScraper({webhookUrl})
+        await ScraperService.sitemapScraper({ pageDelay, webhookUrl });
 
     } catch (error) {
         console.error('Error en controller (sitemap):', error);

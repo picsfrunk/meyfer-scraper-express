@@ -27,9 +27,9 @@ async function categoryScraper({ rubros, pageDelay, categoryDelay, webhookUrl })
     }
 }
 
-async function sitemapScraper({ webhookUrl }) {
+async function sitemapScraper({ pageDelay, webhookUrl }) {
     try {
-        const result = await runSitemapScraper();
+        const result = await runSitemapScraper(pageDelay);
 
         if (webhookUrl) {
             await sendWebhook(webhookUrl, {

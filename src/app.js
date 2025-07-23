@@ -15,9 +15,8 @@ app.use(morgan('dev'));
 // Routes
 const scraperRoutes = require('./api/routes/scraper.route');
 
-// Endpoint raíz
 app.get('/', (req, res) => {
-    res.send('¡Bienvenido a la API de Scraping!');
+    res.send('Welcome to Scraping API!');
 });
 
 // Scraper Routes

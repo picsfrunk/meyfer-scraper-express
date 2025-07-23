@@ -29,6 +29,7 @@ async function fetchSitemapUrls() {
                 if (urls.length === 10) return false; // corta el .each de cheerio
             }
         });
+        console.log(urls);
 
         return urls;
     } catch (err) {
@@ -64,7 +65,7 @@ async function scrapeProductFromUrl(url) {
     }
 }
 
-async function runSitemapScraper() {
+async function runSitemapScraper(pageDelay = PAGE_DELAY_MS) {
     const urls = await fetchSitemapUrls();
     if (!urls.length) return 0;
 
@@ -77,6 +78,7 @@ async function runSitemapScraper() {
     for (const url of urls) {
         const data = await scrapeProductFromUrl(url);
         if (data) {
+            console.log(data)
             await collection.updateOne(
                 { product_id: data.product_id },
                 { $set: data },
@@ -85,7 +87,7 @@ async function runSitemapScraper() {
             processed++;
             logToFile(`✔ Guardado desde sitemap: ${data.product_id} - ${data.display_name}`);
         }
-        await delay(PAGE_DELAY_MS);
+        await delay(pageDelay);
     }
 
     await mongo.close();
