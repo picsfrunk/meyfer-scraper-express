@@ -1,11 +1,11 @@
 require('dotenv').config();
-const config = require('../../config/config');
+const config = require('../../../config/config');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { MongoClient } = require('mongodb');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
-const logToFile = require('../../utils/logToFile');
+const logToFile = require('../../../utils/logToFile');
 
 // Delay helper
 const delay = ms => new Promise(res => setTimeout(res, ms));
@@ -22,7 +22,7 @@ const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
 
 // Cargar rubros desde archivo externo
-const RUBROS = require('../../config/rubros');
+const RUBROS = require('../../../config/rubros');
 
 // Axios con cookies
 const jar = new tough.CookieJar();

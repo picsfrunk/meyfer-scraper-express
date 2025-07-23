@@ -7,28 +7,7 @@ const runCategoryScraper = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Scraper started' });
 
-        ScraperService.categoryScraper({rubros, pageDelay, categoryDelay})
-            .then(total => {
-                if (webhookUrl) {
-                    sendWebhook(webhookUrl, {
-                        status: 'completed',
-                        source: 'category',
-                        processed: total,
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            })
-            .catch(err => {
-                console.error('Scraper error:', err);
-                if (webhookUrl) {
-                    sendWebhook(webhookUrl, {
-                        status: 'error',
-                        source: 'category',
-                        message: err.message,
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            });
+        await ScraperService.categoryScraper({rubros, pageDelay, categoryDelay, webhookUrl});
 
     } catch (error) {
         console.error('Error en controller:', error);
