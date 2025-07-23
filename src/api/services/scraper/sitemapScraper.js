@@ -26,7 +26,7 @@ async function fetchSitemapUrls() {
             const loc = $(el).text();
             if (loc.includes('/shop/')) {
                 urls.push(loc);
-                if (urls.length === 10) return false; // corta el .each de cheerio
+                // if (urls.length === 10) return false; // corta el .each de cheerio
             }
         });
         console.log(urls);
@@ -67,7 +67,13 @@ async function scrapeProductFromUrl(url) {
 
 async function runSitemapScraper(pageDelay = PAGE_DELAY_MS) {
     const urls = await fetchSitemapUrls();
+    const TOTAL_ITEMS_TO_SCRAPE = urls.length;
+    console.log(TOTAL_ITEMS_TO_SCRAPE);
+    const LIMIT_ITEMS_TO_PROCESS = 20; // 🔁 Cambiá este valor si querés procesar menos o todos
+
     if (!urls.length) return 0;
+
+    const urlsToProcess = urls.slice(0, LIMIT_ITEMS_TO_PROCESS);
 
     const mongo = new MongoClient(MONGO_URI);
     await mongo.connect();
@@ -75,10 +81,13 @@ async function runSitemapScraper(pageDelay = PAGE_DELAY_MS) {
     const collection = db.collection(MONGO_COLLECTION);
 
     let processed = 0;
-    for (const url of urls) {
+    let startTime = Date.now();
+    let estimationShown = false;
+
+    for (const url of urlsToProcess) {
         const data = await scrapeProductFromUrl(url);
         if (data) {
-            console.log(data)
+            console.log(data);
             await collection.updateOne(
                 { product_id: data.product_id },
                 { $set: data },
@@ -87,11 +96,30 @@ async function runSitemapScraper(pageDelay = PAGE_DELAY_MS) {
             processed++;
             logToFile(`✔ Guardado desde sitemap: ${data.product_id} - ${data.display_name}`);
         }
+
         await delay(pageDelay);
+
+        // Estimación con primeros 10 ítems
+        if (processed === 10 && !estimationShown) {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const avgTimePerItem = elapsed / 10;
+            const estimatedTotal = avgTimePerItem * TOTAL_ITEMS_TO_SCRAPE;
+
+            const msg = `⏱️ Estimación: ${TOTAL_ITEMS_TO_SCRAPE} artículos tomarían ~${Math.round(estimatedTotal)} segundos (${(estimatedTotal / 60).toFixed(2)} minutos)`;
+            console.log(msg);
+            logToFile(msg);
+            estimationShown = true;
+        }
     }
+
+    const totalElapsed = (Date.now() - startTime) / 1000;
+    const endMsg = `✅ Finalizado: ${processed}/${LIMIT_ITEMS_TO_PROCESS} artículos procesados en ${Math.round(totalElapsed)} segundos (${(totalElapsed / 60).toFixed(2)} minutos)`;
+    console.log(endMsg);
+    logToFile(endMsg);
 
     await mongo.close();
     return processed;
 }
+
 
 module.exports = { runSitemapScraper };
