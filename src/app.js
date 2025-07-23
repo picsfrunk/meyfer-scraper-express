@@ -13,7 +13,7 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 // Routes
-const scraperRoutes = require('./api/routes/scraper.route');
+const scraperRoutes = require('./api/routes/scraperRoute');
 
 app.get('/', (req, res) => {
     res.send('Welcome to Scraping API!');

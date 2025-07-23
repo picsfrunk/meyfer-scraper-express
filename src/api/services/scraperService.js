@@ -1,6 +1,6 @@
 const { runCategoryScraper } = require('./scraper/categoryScraper');
 const { runSitemapScraper } = require('./scraper/sitemapScraper');
-const { sendWebhook } = require('./webhook.service');
+const { sendWebhook } = require('./webhookService');
 
 async function categoryScraper({ rubros, pageDelay, categoryDelay, webhookUrl }) {
     try {

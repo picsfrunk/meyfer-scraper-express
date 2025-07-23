@@ -1,5 +1,5 @@
-const ScraperService = require('../services/scraper.service');
-const { sendWebhook } = require('../services/webhook.service');
+const ScraperService = require('../services/scraperService');
+const { sendWebhook } = require('../services/webhookService');
 
 const runCategoryScraper = async (req, res) => {
     try {
