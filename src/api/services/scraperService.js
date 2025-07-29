@@ -1,10 +1,16 @@
-const { runCategoryScraper } = require('./scraper/categoryScraper');
-const { runSitemapScraper } = require('./scraper/sitemapScraper');
+const { runCategoryScraper } = require('../../scraper/categoryScraper');
+const { runSitemapScraper } = require('../../scraper/sitemapScraper');
 const { sendWebhook } = require('./webhookService');
 
-async function categoryScraper({ rubros, pageDelay, categoryDelay, webhookUrl }) {
+async function categoryScraper({
+                                   categoryDelay,
+                                   collection,
+                                   pageDelay,
+                                   rubros,
+                                   webhookUrl
+    }){
     try {
-        const total = await runCategoryScraper({ rubros, pageDelay, categoryDelay });
+        const total = await runCategoryScraper({ rubros, pageDelay, categoryDelay, collection });
 
         if (webhookUrl) {
             await sendWebhook(webhookUrl, {

@@ -1,13 +1,21 @@
 const ScraperService = require('../services/scraperService');
-const { sendWebhook } = require('../services/webhookService');
 
-const runCategoryScraper = async (req, res) => {
+const categoryScraperController = async (req, res) => {
     try {
-        const { rubros = 'all', pageDelay, categoryDelay, webhookUrl } = req.body;
-
+        const {
+            rubros = 'all',
+            pageDelay,
+            categoryDelay,
+            webhookUrl
+        } = req.body, collection = req.collection;
         res.status(202).json({ status: 'accepted', message: 'Scraper started' });
-
-        await ScraperService.categoryScraper({rubros, pageDelay, categoryDelay, webhookUrl});
+        await ScraperService.categoryScraper({
+            categoryDelay,
+            collection,
+            pageDelay,
+            rubros,
+            webhookUrl
+        });
 
     } catch (error) {
         console.error('Error en controller:', error);
@@ -15,7 +23,7 @@ const runCategoryScraper = async (req, res) => {
     }
 };
 
-const runSitemapScraper = async (req, res) => {
+const sitemapScraperController = async (req, res) => {
     try {
         const { pageDelay, webhookUrl } = req.body;
 
@@ -30,6 +38,6 @@ const runSitemapScraper = async (req, res) => {
 };
 
 module.exports = {
-    runCategoryScraper,
-    runSitemapScraper,
+    categoryScraperController,
+    sitemapScraperController,
 };

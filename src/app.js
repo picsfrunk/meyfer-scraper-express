@@ -12,6 +12,27 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
 
+// Database
+const { connectToMongo } = require('./database/mongo');
+let db_collection
+connectToMongo()
+.then( (mongo_collection) => {
+        db_collection = mongo_collection;
+        console.log('🟢 Conectado a MongoDB');
+    })
+.catch((err) => {
+        console.error('🔴 Error al conectar a MongoDB', err);
+        process.exit(1);
+    });
+
+app.use((req, res, next) => {
+    if (!db_collection) {
+        return res.status(500).json({ error: 'Base de datos no inicializada aún' });
+    }
+    req.collection = db_collection;
+    next();
+});
+
 // Routes
 const scraperRoutes = require('./api/routes/scraperRoute');
 
