@@ -1,14 +1,12 @@
-# Dockerfile
-FROM node:20-slim
+FROM node:20-alpine
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
 COPY package*.json ./
 RUN npm install
 
 COPY . .
 
-# Production port (not required if CLI only)
-EXPOSE 8080
+EXPOSE 3000
 
-CMD ["node", "scraper.js"]
+CMD ["npm", "start"]
