@@ -1,10 +1,6 @@
-// sitemapScraper.js
 require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { MongoClient } = require('mongodb');
-const fs = require('fs');
-const path = require('path');
 const logToFile = require('../utils/logToFile');
 const config = require('../config/config');
 
@@ -65,20 +61,14 @@ async function scrapeProductFromUrl(url) {
     }
 }
 
-async function runSitemapScraper(pageDelay = PAGE_DELAY_MS) {
+async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     const urls = await fetchSitemapUrls();
     const TOTAL_ITEMS_TO_SCRAPE = urls.length;
-    console.log(TOTAL_ITEMS_TO_SCRAPE);
     const LIMIT_ITEMS_TO_PROCESS = 20; // 🔁 Cambiá este valor si querés procesar menos o todos
 
     if (!urls.length) return 0;
 
     const urlsToProcess = urls.slice(0, LIMIT_ITEMS_TO_PROCESS);
-
-    const mongo = new MongoClient(MONGO_URI);
-    await mongo.connect();
-    const db = mongo.db(MONGO_DB);
-    const collection = db.collection(MONGO_COLLECTION);
 
     let processed = 0;
     let startTime = Date.now();

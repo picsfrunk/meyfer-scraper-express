@@ -7,8 +7,12 @@ const categoryScraperController = async (req, res) => {
             pageDelay,
             categoryDelay,
             webhookUrl
-        } = req.body, collection = req.collection;
+        } = req.body,
+
+            collection = req.collection;
+
         res.status(202).json({ status: 'accepted', message: 'Scraper started' });
+
         await ScraperService.categoryScraper({
             categoryDelay,
             collection,
@@ -26,10 +30,15 @@ const categoryScraperController = async (req, res) => {
 const sitemapScraperController = async (req, res) => {
     try {
         const { pageDelay, webhookUrl } = req.body;
+        const collection = req.collection;
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
-        await ScraperService.sitemapScraper({ pageDelay, webhookUrl });
+        await ScraperService.sitemapScraper({
+            pageDelay,
+            webhookUrl,
+            collection,
+        });
 
     } catch (error) {
         console.error('Error en controller (sitemap):', error);

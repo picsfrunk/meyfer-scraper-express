@@ -33,9 +33,9 @@ async function categoryScraper({
     }
 }
 
-async function sitemapScraper({ pageDelay, webhookUrl }) {
+async function sitemapScraper({ pageDelay, webhookUrl, collection }) {
     try {
-        const result = await runSitemapScraper(pageDelay);
+        const result = await runSitemapScraper(pageDelay, collection);
 
         if (webhookUrl) {
             await sendWebhook(webhookUrl, {
