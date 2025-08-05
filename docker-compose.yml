@@ -1,6 +1,36 @@
 services:
-  scraper:
+  mongodb:
+    image: mongo:latest
+    container_name: mongo-scraper
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./mongo_data:/data/db
+    networks:
+      - scraper-net
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    restart: always
+
+  api:
     build: .
+    container_name: app-scraper
     env_file: .env
+    environment:
+        - MONGO_URI=mongodb://root:2222@mongodb:27017/?authSource=admin
+    ports:
+      - "3000:3000"
     volumes:
       - ./logs:/app/logs
+    depends_on:
+      - mongodb
+    networks:
+      - scraper-net
+
+volumes:
+  mongo_data:
+
+networks:
+  scraper-net:
+    driver: bridge

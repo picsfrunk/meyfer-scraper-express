@@ -14,16 +14,15 @@ app.use(morgan('dev'));
 
 // Database
 const { connectToMongo } = require('./database/mongo');
-let db_collection
+let db_collection = null
 connectToMongo()
-.then( (mongo_collection) => {
-        db_collection = mongo_collection;
-        console.log('🟢 Conectado a MongoDB');
-    })
-.catch((err) => {
-        console.error('🔴 Error al conectar a MongoDB', err);
-        process.exit(1);
-    });
+    .then( (mongo_collection) => {
+            db_collection = mongo_collection;
+            console.log('🟢 Conectado a MongoDB');
+        })
+    .catch( (err) => {
+            console.error('🔴 Error al conectar a MongoDB', err);
+        });
 
 app.use((req, res, next) => {
     if (!db_collection) {
