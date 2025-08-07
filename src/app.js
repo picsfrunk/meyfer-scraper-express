@@ -26,7 +26,7 @@ connectToMongo()
 
 app.use((req, res, next) => {
     if (!db_collection) {
-        return res.status(500).json({ error: 'Base de datos no inicializada aún' });
+        return res.status(500).json({ error: 'Base de datos en Scraper Microservice no inicializada aún' });
     }
     req.collection = db_collection;
     next();

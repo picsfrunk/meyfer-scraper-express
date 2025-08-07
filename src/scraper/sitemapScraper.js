@@ -7,9 +7,6 @@ const config = require('../config/config');
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 const BASE_URL = config.baseUrl;
-const MONGO_URI = config.mongoUrl;
-const MONGO_DB = config.mongoDbName;
-const MONGO_COLLECTION = config.mongoCollection;
 const PAGE_DELAY_MS = config.pageDelay;
 
 async function fetchSitemapUrls() {
@@ -64,7 +61,7 @@ async function scrapeProductFromUrl(url) {
 async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     const urls = await fetchSitemapUrls();
     const TOTAL_ITEMS_TO_SCRAPE = urls.length;
-    const LIMIT_ITEMS_TO_PROCESS = 20; // 🔁 Cambiá este valor si querés procesar menos o todos
+    const LIMIT_ITEMS_TO_PROCESS = process.env.GLOBAL_SITEMAP_LIMIT || 100;
 
     if (!urls.length) return 0;
 
@@ -107,7 +104,6 @@ async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     console.log(endMsg);
     logToFile(endMsg);
 
-    await mongo.close();
     return processed;
 }
 

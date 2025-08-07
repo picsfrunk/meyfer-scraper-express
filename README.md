@@ -97,6 +97,22 @@ Ver el archivo `Dockerfile` y `docker-compose.yml` para despliegue.
 
 ---
 
+
+### Commit [`6790f94`](https://github.com/picsfrunk/meyfer-scraper-express/commit/6790f9469eef1d3f460d33935eb4b2ae3d59fb78)
+**fix: bug en endpoint sitemap y compatibilidad webhook**
+
+- Se corrigió el endpoint `/api/scraper/sitemap/` para asegurar que el payload enviado al webhook del backend cumpla con el formato esperado (`source`, `status`, `processed`, `timestamp`).
+- Ahora el microservicio scraper es compatible con las validaciones del backend y reporta correctamente el estado al finalizar el proceso de scraping.
+- Se mejoró el control de errores y el formato de la notificación enviada, evitando rechazos o errores 400 por parte del backend.
+- Refactor en el service del scraper para limpiar la estructura del código y hacer más clara la notificación al webhook.
+
+---
+
+### Notas adicionales
+
+- Con estos cambios, la integración entre el backend y el scraper es más robusta y escalable.
+- El backend puede recibir notificaciones de fin de proceso de scraping sin errores de validación y el frontend puede orquestar ambos procesos de forma sencilla.
+
 ## Licencia
 
 MIT
