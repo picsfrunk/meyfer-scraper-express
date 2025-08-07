@@ -1,16 +1,19 @@
 const axios = require('axios');
 
-const sendWebhook = async (webhookUrl, payload) => {
+async function notifyWebhook({ webhookUrl, source, status, processed, timestamp }) {
+    if (!webhookUrl) return;
     try {
-        console.log(`Enviando webhook a: ${webhookUrl}`, payload);
-        const response = await axios.post(webhookUrl, payload);
-        return response.data;
-    } catch (error) {
-        console.error('Error sending webhook to:', webhookUrl, "Error: ", error.message);
-        throw new Error('Failed to send webhook');
+        await axios.post(webhookUrl, {
+            source,
+            status,
+            processed,
+            timestamp: timestamp || new Date().toISOString(),
+        });
+    } catch (err) {
+        console.error('[scraperService] Error notificando al webhook:', err.message);
     }
-};
+}
 
 module.exports = {
-    sendWebhook
+    notifyWebhook
 };
