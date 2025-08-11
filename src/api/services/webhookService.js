@@ -9,6 +9,7 @@ async function notifyWebhook({ webhookUrl, source, status, processed, timestamp 
             processed,
             timestamp: timestamp || new Date().toISOString(),
         });
+        console.log('[webhookService] Successfully retrieved webhook url: ', webhookUrl);
     } catch (err) {
         console.error('[scraperService] Error notificando al webhook:', err.message);
     }
