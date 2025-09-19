@@ -17,7 +17,7 @@ const ODOO_USER = config.odooUser;
 const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
 
-// Cargar rubros desde archivo externo
+// Cargar categoryId desde archivo externo
 const RUBROS = require('../config/rubros');
 
 // Axios con cookies
@@ -125,10 +125,10 @@ async function getProductDetails(product, categoryId, categoryName) {
     }
 }
 
-async function runCategoryScraper({ rubros = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS, collection }) {
-    const rubrosFiltrados = rubros === "all"
+async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS, collection }) {
+    const rubrosFiltrados = categoryId === "all"
         ? RUBROS
-        : RUBROS.filter(r => r.id === parseInt(rubros));
+        : RUBROS.filter(r => r.id === parseInt(categoryId));
 
     if (!rubrosFiltrados.length) {
         throw new Error('⚠️ Ningún rubro coincide.');
