@@ -3,7 +3,7 @@ const ScraperService = require('../services/scraperService');
 const categoryScraperController = async (req, res) => {
     try {
         const {
-            rubros = 'all',
+            categoryId = 'all',
             pageDelay,
             categoryDelay,
             webhookUrl
@@ -17,7 +17,7 @@ const categoryScraperController = async (req, res) => {
             categoryDelay,
             collection,
             pageDelay,
-            rubros,
+            categoryId,
             webhookUrl
         });
 

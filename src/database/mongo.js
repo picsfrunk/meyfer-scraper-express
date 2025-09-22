@@ -1,15 +1,25 @@
+// mongo.js
 const { MongoClient } = require('mongodb');
 
-let collection = null;
+let db = null;
 
-async function connectToMongo() {
-    if (collection) return collection;
+async function getDB() {
+    if (db) return db;
 
     const client = new MongoClient(process.env.MONGO_URI);
-    await client.connect(); // Falla si Mongo no esta correctamente configurado
-    const db = client.db(process.env.MONGO_DB || 'scraping');
-    collection = db.collection(process.env.MONGO_COLLECTION);
-    return collection;
+    await client.connect();
+    db = client.db(process.env.MONGO_DB || 'meyfer-scraping');
+    return db;
 }
 
-module.exports = { connectToMongo };
+async function getConfigCollection() {
+    const database = await getDB();
+    return database.collection('configs');
+}
+
+async function getScrapedCollection() {
+    const database = await getDB();
+    return database.collection(process.env.MONGO_COLLECTION || 'scraped-products');
+}
+
+module.exports = { getDB, getConfigCollection, getScrapedCollection };

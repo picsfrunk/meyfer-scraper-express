@@ -13,9 +13,9 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 // Database
-const { connectToMongo } = require('./database/mongo');
+const { getScrapedCollection } = require('./database/mongo');
 let db_collection = null
-connectToMongo()
+getScrapedCollection()
     .then( (mongo_collection) => {
             db_collection = mongo_collection;
             console.log('🟢 Conectado a MongoDB');
@@ -26,7 +26,7 @@ connectToMongo()
 
 app.use((req, res, next) => {
     if (!db_collection) {
-        return res.status(500).json({ error: 'Base de datos no inicializada aún' });
+        return res.status(500).json({ error: 'Base de datos en Scraper Microservice no inicializada aún' });
     }
     req.collection = db_collection;
     next();

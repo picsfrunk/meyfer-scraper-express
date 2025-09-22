@@ -3,13 +3,11 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const logToFile = require('../utils/logToFile');
 const config = require('../config/config');
+const {getConfigCollection} = require("../database/mongo");
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 const BASE_URL = config.baseUrl;
-const MONGO_URI = config.mongoUrl;
-const MONGO_DB = config.mongoDbName;
-const MONGO_COLLECTION = config.mongoCollection;
 const PAGE_DELAY_MS = config.pageDelay;
 
 async function fetchSitemapUrls() {
@@ -35,7 +33,7 @@ async function fetchSitemapUrls() {
 }
 
 
-async function scrapeProductFromUrl(url) {
+async function scrapeProductFromUrl(url, profitMargin) {
     try {
         const { data } = await axios.get(url);
         const $ = cheerio.load(data);
@@ -48,10 +46,13 @@ async function scrapeProductFromUrl(url) {
             ? `${BASE_URL}${$('#product_detail img').attr('src')}`
             : null;
 
+        const finalPrice = data.list_price * (1 + profitMargin);
+
+
         return {
             product_id: Number(productId),
             display_name: name,
-            list_price: parseFloat(price) || 0,
+            list_price: finalPrice,
             image_url: imageUrl,
             source_url: url
         };
@@ -64,7 +65,7 @@ async function scrapeProductFromUrl(url) {
 async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     const urls = await fetchSitemapUrls();
     const TOTAL_ITEMS_TO_SCRAPE = urls.length;
-    const LIMIT_ITEMS_TO_PROCESS = 20; // 🔁 Cambiá este valor si querés procesar menos o todos
+    const LIMIT_ITEMS_TO_PROCESS = process.env.GLOBAL_SITEMAP_LIMIT || 100;
 
     if (!urls.length) return 0;
 
@@ -74,8 +75,12 @@ async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     let startTime = Date.now();
     let estimationShown = false;
 
+    const configCollection = await getConfigCollection();
+    const configDoc = await configCollection.findOne({ key: 'profitMargin' });
+    const profitMargin = configDoc ? configDoc.value / 100 : 1;
+
     for (const url of urlsToProcess) {
-        const data = await scrapeProductFromUrl(url);
+        const data = await scrapeProductFromUrl(url, profitMargin);
         if (data) {
             console.log(data);
             await collection.updateOne(
@@ -107,7 +112,6 @@ async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
     console.log(endMsg);
     logToFile(endMsg);
 
-    await mongo.close();
     return processed;
 }
 

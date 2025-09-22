@@ -1,64 +1,36 @@
 const { runCategoryScraper } = require('../../scraper/categoryScraper');
 const { runSitemapScraper } = require('../../scraper/sitemapScraper');
-const { sendWebhook } = require('./webhookService');
+const { notifyWebhook } = require('./webhookService');
 
-async function categoryScraper({
-                                   categoryDelay,
-                                   collection,
-                                   pageDelay,
-                                   rubros,
-                                   webhookUrl
-    }){
+async function sitemapScraper({ pageDelay = 250, webhookUrl, collection }) {
+    let processed = 0;
+    let status = 'success';
+    const source = 'sitemapScraper';
     try {
-        const total = await runCategoryScraper({ rubros, pageDelay, categoryDelay, collection });
-
-        if (webhookUrl) {
-            await sendWebhook(webhookUrl, {
-                status: 'completed',
-                source: 'category',
-                processed: total,
-                timestamp: new Date().toISOString()
-            });
-        }
-    } catch (err) {
-        console.error('Scraper error:', err);
-        if (webhookUrl) {
-            await sendWebhook(webhookUrl, {
-                status: 'error',
-                source: 'category',
-                message: err.message,
-                timestamp: new Date().toISOString()
-            });
-        }
+        processed = await runSitemapScraper(pageDelay, collection);
+    } catch (error) {
+        status = 'error';
+        console.error('[scraperService] Error en sitemapScraper:', error);
+    } finally {
+        await notifyWebhook({ webhookUrl, source, status, processed });
     }
 }
 
-async function sitemapScraper({ pageDelay, webhookUrl, collection }) {
+async function categoryScraper({ categoryId, pageDelay = 100, categoryDelay = 300, webhookUrl, collection }) {
+    let processed = 0;
+    let status = 'success';
+    const source = 'categoryScraper';
     try {
-        const result = await runSitemapScraper(pageDelay, collection);
-
-        if (webhookUrl) {
-            await sendWebhook(webhookUrl, {
-                status: 'completed',
-                source: 'sitemap',
-                result,
-                timestamp: new Date().toISOString()
-            });
-        }
-    } catch (err) {
-        console.error('Sitemap scraper error:', err);
-        if (webhookUrl) {
-            await sendWebhook(webhookUrl, {
-                status: 'error',
-                source: 'sitemap',
-                message: err.message,
-                timestamp: new Date().toISOString()
-            });
-        }
+        processed = await runCategoryScraper({ categoryId, pageDelay, categoryDelay, collection });
+    } catch (error) {
+        status = 'error';
+        console.error('[scraperService] Error en categoryScraper:', error);
+    } finally {
+        await notifyWebhook({ webhookUrl, source, status, processed });
     }
 }
 
 module.exports = {
-    categoryScraper,
     sitemapScraper,
+    categoryScraper,
 };
