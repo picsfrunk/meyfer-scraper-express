@@ -5,11 +5,10 @@ const cheerio = require('cheerio');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
+const { getConfigCollection } = require('../database/mongo');
 
-// Delay helper
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// Configuración desde config.js
 const BASE_URL = config.baseUrl;
 const DEFAULT_PAGE_DELAY_MS = config.pageDelay;
 const DEFAULT_CATEGORY_DELAY_MS = config.categoryDelay;
@@ -17,10 +16,8 @@ const ODOO_USER = config.odooUser;
 const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
 
-// Cargar categoryId desde archivo externo
 const RUBROS = require('../config/rubros');
 
-// Axios con cookies
 const jar = new tough.CookieJar();
 const client = wrapper(axios.create({ jar, withCredentials: true }));
 
@@ -77,7 +74,7 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
     }
 }
 
-async function getProductDetails(product, categoryId, categoryName) {
+async function getProductDetails(product, categoryId, categoryName, profitMargin) {
     try {
         const response = await client.post(
             `${BASE_URL}/website_sale/get_combination_info`,
@@ -108,10 +105,12 @@ async function getProductDetails(product, categoryId, categoryName) {
         const brandMatch = data.display_name.match(/"(.*?)"/);
         const brand = brandMatch ? brandMatch[1].trim() : 'generico';
 
+        const finalPrice = data.list_price * (1 + profitMargin);
+
         return {
             product_id: data.product_id,
             display_name: data.display_name,
-            list_price: data.list_price,
+            list_price: finalPrice,
             base_unit_name: data.base_unit_name,
             image_url: imageUrl,
             product_type: data.product_type,
@@ -137,6 +136,10 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
     const loggedIn = await loginToOdoo();
     if (!loggedIn) throw new Error('Login fallido');
 
+    const configCollection = await getConfigCollection();
+    const configDoc = await configCollection.findOne({ key: 'profitMargin' });
+    const profitMargin = configDoc ? configDoc.value / 100 : 1;
+
     let total = 0;
 
     for (const cat of rubrosFiltrados) {
@@ -150,7 +153,7 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
             const products = await getProductsFromCategoryPage(cat.id, page);
 
             for (const product of products) {
-                const details = await getProductDetails(product, cat.id, cat.name);
+                const details = await getProductDetails(product, cat.id, cat.name, profitMargin);
                 if (details) {
                     await collection.updateOne(
                         { product_id: details.product_id },
@@ -159,7 +162,7 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
                     );
                     total++;
                     logToFile(`✔ Guardado: ${details.product_id} - ${details.display_name}`);
-                    // console.log(`\t\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
+                    console.log(`\t\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
                 }
                 await delay(pageDelay);
             }
