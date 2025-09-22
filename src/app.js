@@ -13,9 +13,9 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 // Database
-const { connectToMongo } = require('./database/mongo');
+const { getScrapedCollection } = require('./database/mongo');
 let db_collection = null
-connectToMongo()
+getScrapedCollection()
     .then( (mongo_collection) => {
             db_collection = mongo_collection;
             console.log('🟢 Conectado a MongoDB');
