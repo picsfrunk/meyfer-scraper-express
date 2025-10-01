@@ -2,23 +2,11 @@ const cloudinary = require('cloudinary').v2;
 const axios = require('axios');
 const logToFile = require('./logToFile');
 
-// Configurar Cloudinary
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
-
-// Verificar configuración al cargar el módulo
-console.log('🔧 Configuración de Cloudinary:');
-console.log(`   Cloud Name: ${process.env.CLOUDINARY_CLOUD_NAME ? '✓ Configurado' : '✗ NO CONFIGURADO'}`);
-console.log(`   API Key: ${process.env.CLOUDINARY_API_KEY ? '✓ Configurado' : '✗ NO CONFIGURADO'}`);
-console.log(`   API Secret: ${process.env.CLOUDINARY_API_SECRET ? '✓ Configurado (oculto)' : '✗ NO CONFIGURADO'}`);
-
-if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-    console.error('❌ ADVERTENCIA: Cloudinary no está completamente configurado en .env');
-    logToFile('❌ ADVERTENCIA: Cloudinary no está completamente configurado en .env');
-}
 
 /**
  * Descarga una imagen desde una URL y la sube a Cloudinary
@@ -32,7 +20,6 @@ if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !pr
 async function uploadImageToCloudinary(imageUrl, options = {}) {
     if (!imageUrl) {
         logToFile('⚠️ No se proporcionó URL de imagen');
-        console.log('⚠️ No se proporcionó URL de imagen');
         return null;
     }
 
@@ -40,9 +27,6 @@ async function uploadImageToCloudinary(imageUrl, options = {}) {
         // Configuración por defecto
         const folder = options.folder || 'products';
         const publicId = options.public_id || `product_${options.productId || Date.now()}`;
-
-        console.log(`🔄 Intentando descargar imagen: ${imageUrl}`);
-        logToFile(`🔄 Intentando descargar imagen: ${imageUrl}`);
 
         // Descargar la imagen como buffer
         const response = await axios.get(imageUrl, {
@@ -53,15 +37,9 @@ async function uploadImageToCloudinary(imageUrl, options = {}) {
             }
         });
 
-        console.log(`✔ Imagen descargada, tamaño: ${response.data.length} bytes, tipo: ${response.headers['content-type']}`);
-        logToFile(`✔ Imagen descargada, tamaño: ${response.data.length} bytes`);
-
         // Convertir a base64
         const imageBuffer = Buffer.from(response.data);
         const base64Image = `data:${response.headers['content-type']};base64,${imageBuffer.toString('base64')}`;
-
-        console.log(`🔄 Subiendo a Cloudinary con public_id: ${publicId}`);
-        logToFile(`🔄 Subiendo a Cloudinary con public_id: ${publicId}`);
 
         // Subir a Cloudinary
         const result = await cloudinary.uploader.upload(base64Image, {
@@ -75,30 +53,15 @@ async function uploadImageToCloudinary(imageUrl, options = {}) {
             fetch_format: 'auto'
         });
 
-        console.log(`✅ Imagen subida exitosamente a Cloudinary: ${result.secure_url}`);
         logToFile(`✔ Imagen subida a Cloudinary: ${result.secure_url}`);
         return result.secure_url;
 
     } catch (error) {
-        console.error(`❌ ERROR DETALLADO subiendo imagen a Cloudinary:`);
-        console.error(`   URL origen: ${imageUrl}`);
-        console.error(`   Mensaje: ${error.message}`);
-        console.error(`   Stack: ${error.stack}`);
-
         logToFile(`❌ Error subiendo imagen a Cloudinary: ${error.message}`);
-        logToFile(`   URL origen: ${imageUrl}`);
-
-        // Más detalles del error
-        if (error.response) {
-            console.error(`   Status HTTP: ${error.response.status}`);
-            console.error(`   Respuesta: ${JSON.stringify(error.response.data)}`);
-            logToFile(`   Status HTTP: ${error.response.status}`);
-        }
 
         // Si falla, intentar guardar la URL original como fallback
         if (error.response?.status === 404) {
             logToFile('⚠️ Imagen no encontrada en origen, usando URL original');
-            console.log('⚠️ Imagen no encontrada en origen');
         }
 
         return null; // Devolver null para que se use la URL original si es necesario
@@ -112,30 +75,13 @@ async function uploadImageToCloudinary(imageUrl, options = {}) {
  * @returns {Promise<string>} - URL de Cloudinary o URL original
  */
 async function processProductImage(imageUrl, productId) {
-    console.log(`\n🖼️  Procesando imagen para producto ${productId}`);
-    console.log(`   URL original: ${imageUrl}`);
-    logToFile(`🖼️  Procesando imagen para producto ${productId}: ${imageUrl}`);
-
-    if (!imageUrl) {
-        console.log('   ⚠️  URL de imagen vacía o null');
-        logToFile('   ⚠️  URL de imagen vacía para producto ' + productId);
-        return null;
-    }
+    if (!imageUrl) return null;
 
     const cloudinaryUrl = await uploadImageToCloudinary(imageUrl, {
-        folder: 'products-test',
+        folder: 'meyfer-products',
         productId: productId
     });
 
-    if (cloudinaryUrl) {
-        console.log(`   ✅ Imagen procesada exitosamente`);
-        console.log(`   Nueva URL: ${cloudinaryUrl}\n`);
-    } else {
-        console.log(`   ⚠️  Falló subida, usando URL original\n`);
-        logToFile(`   ⚠️  Usando URL original para producto ${productId}`);
-    }
-
-    // Si falla la subida, mantener la URL original
     return cloudinaryUrl || imageUrl;
 }
 
