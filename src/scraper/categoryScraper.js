@@ -54,12 +54,12 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
     const url = `${BASE_URL}/shop/category/por-rubro-xxx-${categoryId}/page/${page}`;
     try {
         const res = await client.get(url);
-        const $ = cheerio.load(res.data);
+        const cheerioAPI = cheerio.load(res.data);
         const products = [];
 
-        $('form.oe_product_cart').each((_, el) => {
-            const product_id = $(el).find("input[name='product_id']").val();
-            const product_template_id = $(el).find("input[name='product_template_id']").val();
+        cheerioAPI('form.oe_product_cart').each((_, el) => {
+            const product_id = cheerioAPI(el).find("input[name='product_id']").val();
+            const product_template_id = cheerioAPI(el).find("input[name='product_template_id']").val();
             if (product_id && product_template_id) {
                 products.push({
                     product_id: Number(product_id),
@@ -100,8 +100,8 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         );
 
         const data = response.data.result;
-        const $ = cheerio.load(data.carousel || '');
-        const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
+        const cheerioAPI = cheerio.load(data.carousel || '');
+        const imageUrl = cheerioAPI('img').attr('src') ? `${BASE_URL}${cheerioAPI('img').attr('src')}` : null;
 
         const cloudinaryImageUrl = await processProductImage(imageUrl, data.product_id);
 
@@ -159,6 +159,7 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
             for (const product of products) {
                 const details = await getProductDetails(product, cat.id, cat.name, profitMargin);
                 if (details) {
+                    console.log(details);
                     await collection.updateOne(
                         { product_id: details.product_id },
                         { $set: details },
