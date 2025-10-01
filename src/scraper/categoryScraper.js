@@ -6,6 +6,7 @@ const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
 const { getConfigCollection } = require('../database/mongo');
+const { processProductImage } = require('../utils/imageUploader');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
@@ -102,6 +103,8 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         const $ = cheerio.load(data.carousel || '');
         const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
 
+        const cloudinaryImageUrl = await processProductImage(imageUrl, data.product_id);
+
         const brandMatch = data.display_name.match(/"(.*?)"/);
         const brand = brandMatch ? brandMatch[1].trim() : 'generico';
 
@@ -112,7 +115,7 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
             display_name: data.display_name,
             list_price: finalPrice,
             base_unit_name: data.base_unit_name,
-            image_url: imageUrl,
+            image_url: cloudinaryImageUrl,
             product_type: data.product_type,
             category_id: categoryId,
             category_name: categoryName,
@@ -141,6 +144,7 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
     const profitMargin = configDoc ? configDoc.value / 100 : 1;
 
     let total = 0;
+    let uploaded = 0;
 
     for (const cat of rubrosFiltrados) {
         console.log(`📦 Rubro: ${cat.name} (${cat.id})`);
@@ -161,6 +165,11 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
                         { upsert: true }
                     );
                     total++;
+
+                    if (details.image_url && details.image_url.includes('cloudinary.com')) {
+                        uploaded++;
+                    }
+
                     logToFile(`✔ Guardado: ${details.product_id} - ${details.display_name}`);
                     console.log(`\t\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
                 }
@@ -170,7 +179,8 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
         await delay(categoryDelay);
     }
 
-    logToFile(`✅ Finalizado. Total productos: ${total}`);
+    logToFile(`✅ Finalizado. Total productos: ${total} | Imágenes en Cloudinary: ${uploaded}`);
+    console.log(`✅ Imágenes subidas a Cloudinary: ${uploaded}/${total}`);
     return total;
 }
 
