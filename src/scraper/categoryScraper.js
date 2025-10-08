@@ -6,6 +6,7 @@ const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
 const { getConfigCollection } = require('../database/mongo');
+const { processProductImage } = require('../utils/imageUploader');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
@@ -53,12 +54,12 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
     const url = `${BASE_URL}/shop/category/por-rubro-xxx-${categoryId}/page/${page}`;
     try {
         const res = await client.get(url);
-        const $ = cheerio.load(res.data);
+        const cheerioAPI = cheerio.load(res.data);
         const products = [];
 
-        $('form.oe_product_cart').each((_, el) => {
-            const product_id = $(el).find("input[name='product_id']").val();
-            const product_template_id = $(el).find("input[name='product_template_id']").val();
+        cheerioAPI('form.oe_product_cart').each((_, el) => {
+            const product_id = cheerioAPI(el).find("input[name='product_id']").val();
+            const product_template_id = cheerioAPI(el).find("input[name='product_template_id']").val();
             if (product_id && product_template_id) {
                 products.push({
                     product_id: Number(product_id),
@@ -74,7 +75,7 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
     }
 }
 
-async function getProductDetails(product, categoryId, categoryName, profitMargin) {
+async function getProductDetails(product, categoryId, categoryName, profitMargin, collection) {
     try {
         const response = await client.post(
             `${BASE_URL}/website_sale/get_combination_info`,
@@ -99,8 +100,15 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         );
 
         const data = response.data.result;
-        const $ = cheerio.load(data.carousel || '');
-        const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
+        const cheerioAPI = cheerio.load(data.carousel || '');
+        const imageUrl = cheerioAPI('img').attr('src') ? `${BASE_URL}${cheerioAPI('img').attr('src')}` : null;
+
+        // Buscar si el producto ya existe en BD para obtener la URL existente
+        const existingProduct = await collection.findOne({ product_id: data.product_id });
+        const existingImageUrl = existingProduct?.image_url || null;
+
+        // Procesar imagen solo si es necesario (nueva o cambió)
+        const cloudinaryImageUrl = await processProductImage(imageUrl, data.product_id, existingImageUrl);
 
         const brandMatch = data.display_name.match(/"(.*?)"/);
         const brand = brandMatch ? brandMatch[1].trim() : 'generico';
@@ -110,9 +118,11 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         return {
             product_id: data.product_id,
             display_name: data.display_name,
-            list_price: finalPrice,
+            final_price: finalPrice,
+            list_price: data.list_price,
             base_unit_name: data.base_unit_name,
-            image_url: imageUrl,
+            image_url: cloudinaryImageUrl,
+            original_image_url: imageUrl, // Guardar URL original como backup
             product_type: data.product_type,
             category_id: categoryId,
             category_name: categoryName,
@@ -141,6 +151,8 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
     const profitMargin = configDoc ? configDoc.value / 100 : 1;
 
     let total = 0;
+    let uploaded = 0;
+    let reused = 0;
 
     for (const cat of rubrosFiltrados) {
         console.log(`📦 Rubro: ${cat.name} (${cat.id})`);
@@ -153,7 +165,7 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
             const products = await getProductsFromCategoryPage(cat.id, page);
 
             for (const product of products) {
-                const details = await getProductDetails(product, cat.id, cat.name, profitMargin);
+                const details = await getProductDetails(product, cat.id, cat.name, profitMargin, collection);
                 if (details) {
                     await collection.updateOne(
                         { product_id: details.product_id },
@@ -161,6 +173,14 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
                         { upsert: true }
                     );
                     total++;
+
+                    // Contar imágenes subidas vs reutilizadas
+                    if (details.image_url && details.image_url.includes('cloudinary.com')) {
+                        // Verificar si es una imagen nueva o reutilizada
+                        // (esto lo detectamos por los logs, pero podríamos mejorarlo)
+                        uploaded++;
+                    }
+
                     logToFile(`✔ Guardado: ${details.product_id} - ${details.display_name}`);
                     console.log(`\t\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
                 }
@@ -170,7 +190,8 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
         await delay(categoryDelay);
     }
 
-    logToFile(`✅ Finalizado. Total productos: ${total}`);
+    logToFile(`✅ Finalizado. Total productos: ${total} | Imágenes en Cloudinary: ${uploaded}`);
+    console.log(`✅ Imágenes en Cloudinary: ${uploaded}/${total}`);
     return total;
 }
 
