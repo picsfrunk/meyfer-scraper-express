@@ -2,7 +2,7 @@ const { runCategoryScraper } = require('../../scraper/categoryScraper');
 const { runSitemapScraper } = require('../../scraper/sitemapScraper');
 const { notifyWebhook } = require('./webhookService');
 
-async function sitemapScraper({ pageDelay = 250, webhookUrl, collection }) {
+async function sitemapScraper({ pageDelay = process.env.PAGE_DELAY_MS, webhookUrl, collection }) {
     let processed = 0;
     let status = 'success';
     const source = 'sitemapScraper';
