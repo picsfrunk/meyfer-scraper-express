@@ -1,3 +1,4 @@
+//sitemapScraper.js
 require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -46,13 +47,15 @@ async function scrapeProductFromUrl(url, profitMargin) {
             ? `${BASE_URL}${$('#product_detail img').attr('src')}`
             : null;
 
-        const finalPrice = data.list_price * (1 + profitMargin);
-
+        // Parsear precio base correctamente
+        const basePrice = parseFloat(jsonData.price) || parseFloat(price) || 0;
+        const finalPrice = basePrice * (1 + profitMargin);
 
         return {
             product_id: Number(productId),
             display_name: name,
-            list_price: finalPrice,
+            list_price: basePrice,        // Precio original
+            final_price: finalPrice,      // Precio con margen aplicado
             image_url: imageUrl,
             source_url: url
         };
