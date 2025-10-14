@@ -3,7 +3,7 @@ const ScraperService = require('../services/scraperService');
 const categoryScraperController = async (req, res) => {
     try {
         const {
-            categoryId = 'all',
+            categoryId,
             pageDelay,
             categoryDelay,
             webhookUrl
@@ -14,11 +14,11 @@ const categoryScraperController = async (req, res) => {
         res.status(202).json({ status: 'accepted', message: 'Scraper started' });
 
         await ScraperService.categoryScraper({
-            categoryDelay,
-            collection,
-            pageDelay,
             categoryId,
-            webhookUrl
+            pageDelay,
+            categoryDelay,
+            webhookUrl,
+            collection,
         });
 
     } catch (error) {

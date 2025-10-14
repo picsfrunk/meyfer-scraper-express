@@ -16,12 +16,23 @@ async function sitemapScraper({ pageDelay = process.env.PAGE_DELAY_MS, webhookUr
     }
 }
 
-async function categoryScraper({ categoryId, pageDelay = 100, categoryDelay = 300, webhookUrl, collection }) {
+async function categoryScraper({
+        categoryId,
+        pageDelay,
+        categoryDelay,
+        webhookUrl,
+        collection
+    }) {
     let processed = 0;
     let status = 'success';
     const source = 'categoryScraper';
     try {
-        processed = await runCategoryScraper({ categoryId, pageDelay, categoryDelay, collection });
+        processed = await runCategoryScraper({
+            categoryDelay,
+            categoryId,
+            collection,
+            pageDelay
+        });
     } catch (error) {
         status = 'error';
         console.error('[scraperService] Error en categoryScraper:', error);

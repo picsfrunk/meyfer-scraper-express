@@ -134,13 +134,17 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
     }
 }
 
-async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS, collection }) {
+async function runCategoryScraper({   categoryId = 'all',
+                                      pageDelay = DEFAULT_PAGE_DELAY_MS,
+                                      categoryDelay = DEFAULT_CATEGORY_DELAY_MS,
+                                      collection }) {
+
     const rubrosFiltrados = categoryId === "all"
         ? RUBROS
         : RUBROS.filter(r => r.id === parseInt(categoryId));
 
     if (!rubrosFiltrados.length) {
-        throw new Error('⚠️ Ningún rubro coincide.');
+        throw new Error('Ningún rubro coincide con el/los id/s especificado/s.');
     }
 
     const loggedIn = await loginToOdoo();
@@ -152,7 +156,6 @@ async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE
 
     let total = 0;
     let uploaded = 0;
-    let reused = 0;
 
     for (const cat of rubrosFiltrados) {
         console.log(`📦 Rubro: ${cat.name} (${cat.id})`);
