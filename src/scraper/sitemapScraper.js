@@ -21,7 +21,7 @@ async function fetchSitemapUrls() {
             const loc = $(el).text();
             if (loc.includes('/shop/')) {
                 urls.push(loc);
-                // if (urls.length === 10) return false; // corta el .each de cheerio
+                if (urls.length === 10) return false; // corta el .each de cheerio
             }
         });
         console.log(urls);
@@ -41,21 +41,20 @@ async function scrapeProductFromUrl(url, profitMargin) {
 
         const jsonData = JSON.parse($('#product_details').attr('data-product') || '{}');
         const name = jsonData.name || $('h1.product_name').text();
-        const price = jsonData.price || $('span.oe_price').text();
+        const price = jsonData.list_price || $('span.oe_price').text();
         const productId = jsonData.product_id || url.split('-').pop();
         const imageUrl = $('#product_detail img').attr('src')
             ? `${BASE_URL}${$('#product_detail img').attr('src')}`
             : null;
 
-        // Parsear precio base correctamente
         const basePrice = parseFloat(jsonData.price) || parseFloat(price) || 0;
         const finalPrice = basePrice * (1 + profitMargin);
 
         return {
             product_id: Number(productId),
             display_name: name,
-            list_price: basePrice,        // Precio original
-            final_price: finalPrice,      // Precio con margen aplicado
+            list_price: basePrice,
+            final_price: finalPrice,
             image_url: imageUrl,
             source_url: url
         };
