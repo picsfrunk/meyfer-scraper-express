@@ -37,15 +37,15 @@ async function loginToOdoo() {
         });
 
         if (res.data.result?.uid) {
-            console.log('✔ Login exitoso como:', ODOO_USER);
-            logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
+            // console.log('✔ Login exitoso como:', ODOO_USER);
+            // logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
             return true;
         } else {
-            logToFile('❌ Falló el login.');
+            // logToFile('❌ Falló el login.');
             return false;
         }
     } catch (err) {
-        logToFile(`❌ Error durante login: ${err.message}`);
+        // logToFile(`❌ Error durante login: ${err.message}`);
         return false;
     }
 }
@@ -70,7 +70,7 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
 
         return products;
     } catch (error) {
-        logToFile(`❌ Error página ${page} rubro ${categoryId}: ${error.message}`);
+        // logToFile(`❌ Error página ${page} rubro ${categoryId}: ${error.message}`);
         return [];
     }
 }
@@ -229,8 +229,8 @@ async function runCategoryScraper({   categoryId = 'all',
         await delay(categoryDelay);
     }
 
-    logToFile(`✅ Finalizado. Total productos: ${total} | Imágenes en Cloudinary: ${uploaded}`);
-    console.log(`✅ Imágenes en Cloudinary: ${uploaded}/${total}`);
+    // logToFile(`✅ Finalizado. Total productos: ${total} | Imágenes en Cloudinary: ${uploaded}`);
+    // console.log(`✅ Imágenes en Cloudinary: ${uploaded}/${total}`);
     return total;
 }
 
