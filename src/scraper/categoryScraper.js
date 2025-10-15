@@ -164,16 +164,12 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         return null;
     }
 }
-<<<<<<< Updated upstream
 
-async function runCategoryScraper({ categoryId = 'all', pageDelay = DEFAULT_PAGE_DELAY_MS, categoryDelay = DEFAULT_CATEGORY_DELAY_MS, collection }) {
-=======
 async function runCategoryScraper({   categoryId = 'all',
                                       pageDelay = DEFAULT_PAGE_DELAY_MS,
                                       categoryDelay = DEFAULT_CATEGORY_DELAY_MS,
                                       collection }) {
 
->>>>>>> Stashed changes
     const rubrosFiltrados = categoryId === "all"
         ? RUBROS
         : RUBROS.filter(r => r.id === parseInt(categoryId));
