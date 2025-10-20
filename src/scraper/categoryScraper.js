@@ -77,6 +77,34 @@ async function getProductsFromCategoryPage(categoryId, page = 1) {
 
 async function getProductDetails(product, categoryId, categoryName, profitMargin, collection) {
     try {
+        // 1. Construir la URL completa del producto a partir del template ID
+        // Esto asume que el slug se genera con el product_template_id
+        const productUrl = `${BASE_URL}/shop/${product.product_template_id}`;
+
+        // 2. Hacer una petición GET a la página del producto para obtener la URL final con el slug
+        const productPageResponse = await client.get(productUrl);
+
+        // 3. OBTENER LA URL FINAL (después de la redirección) para asegurar que tiene el slug
+        // Nota: Odoo a menudo redirige de /shop/{template_id} a /shop/{slug}-{template_id}
+        const finalProductUrl = productPageResponse.request.res.responseUrl;
+
+        // 4. EXTRAER el código de referencia (Referencia Interna) del slug de la URL
+        // Ejemplo: /shop/0502-bajada-conex-flex-40-50-mm-bomonini-1562?category=71
+        // Queremos '0502'
+        const urlMatch = finalProductUrl.match(/\/shop\/(\d+)-/);
+
+        let customProductId;
+
+        if (urlMatch && urlMatch[1]) {
+            // Usar el valor encontrado en la URL (e.g., '0502')
+            customProductId = urlMatch[1];
+        } else {
+            // Si la extracción falla, recurrir al product_id original como fallback.
+            logToFile(`⚠️ Advertencia: No se pudo extraer la Referencia Interna de la URL para template ID ${product.product_template_id}. Usando product_id original.`);
+            customProductId = product.product_id;
+        }
+
+        // Ahora el Referer debe usar la URL completa con el slug
         const response = await client.post(
             `${BASE_URL}/website_sale/get_combination_info`,
             {
@@ -94,7 +122,8 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    Referer: `${BASE_URL}/shop/${product.product_template_id}`,
+                    // Usar la URL completa con el slug como Referer
+                    Referer: finalProductUrl,
                 },
             }
         );
@@ -104,32 +133,34 @@ async function getProductDetails(product, categoryId, categoryName, profitMargin
         const imageUrl = cheerioAPI('img').attr('src') ? `${BASE_URL}${cheerioAPI('img').attr('src')}` : null;
 
         // Buscar si el producto ya existe en BD para obtener la URL existente
-        const existingProduct = await collection.findOne({ product_id: data.product_id });
+        // IMPORTANTE: Ahora buscamos con el customProductId
+        const existingProduct = await collection.findOne({ product_id: customProductId });
         const existingImageUrl = existingProduct?.image_url || null;
 
-        // Procesar imagen solo si es necesario (nueva o cambió)
-        const cloudinaryImageUrl = await processProductImage(imageUrl, data.product_id, existingImageUrl);
+        // Procesar imagen, usando el customProductId para el nombre
+        const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
 
-        const brandMatch = data.display_name.match(/"(.*?)"/);
+        const brandMatch = data.display_name.match(/"([^"]+)"$/);
         const brand = brandMatch ? brandMatch[1].trim() : 'generico';
 
         const finalPrice = data.list_price * (1 + profitMargin);
 
         return {
-            product_id: data.product_id,
+            // ¡CAMBIO CLAVE AQUÍ! Usamos la referencia extraída de la URL
+            product_id: parseInt(customProductId),
             display_name: data.display_name,
             final_price: finalPrice,
             list_price: data.list_price,
             base_unit_name: data.base_unit_name,
             image_url: cloudinaryImageUrl,
-            original_image_url: imageUrl, // Guardar URL original como backup
+            original_image_url: imageUrl,
             product_type: data.product_type,
             category_id: categoryId,
             category_name: categoryName,
             brand: brand,
         };
     } catch (error) {
-        logToFile(`❌ Error detalle producto ${product.product_id}: ${error.message}`);
+        logToFile(`❌ Error detalle producto ${product.product_id} (Template ID ${product.product_template_id}): ${error.message}`);
         return null;
     }
 }
