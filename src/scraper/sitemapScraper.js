@@ -1,168 +1,78 @@
 require('dotenv').config();
 const config = require('../config/config');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const { wrapper } = require('axios-cookiejar-support');
-const tough = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
 const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
-const { processProductImage } = require('../utils/imageUploader');
+const {
+    loginToOdoo,
+    extractProductIdFromUrl,
+    extractProductIdsFromHtml,
+    fetchProductDetailsFromAPI,
+    extractImageUrl,
+    processProductData,
+} = require('../utils/scraperUtils');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-const BASE_URL = config.baseUrl;
 const DEFAULT_PAGE_DELAY_MS = config.pageDelay;
-
-const ODOO_USER = config.odooUser;
-const ODOO_PASS = config.odooPass;
-const ODOO_DB = config.odooDb;
-
-const jar = new tough.CookieJar();
-const client = wrapper(axios.create({ jar, withCredentials: true }));
-
-async function loginToOdoo() {
-    try {
-        const res = await client.post(`${BASE_URL}/web/session/authenticate`, {
-            jsonrpc: '2.0',
-            method: 'call',
-            params: {
-                db: ODOO_DB,
-                login: ODOO_USER,
-                password: ODOO_PASS,
-            },
-        }, {
-            headers: { 'Content-Type': 'application/json' },
-        });
-
-        if (res.data.result?.uid) {
-            console.log('✔ Login exitoso como:', ODOO_USER);
-            logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
-            return true;
-        } else {
-            logToFile('❌ Falló el login.');
-            return false;
-        }
-    } catch (err) {
-        logToFile(`❌ Error durante login: ${err.message}`);
-        return false;
-    }
-}
-
-async function extractProductIdsFromUrl(productUrl) {
-    try {
-        // Hacer request para obtener los IDs desde la página
-        const response = await client.get(productUrl);
-        const $ = cheerio.load(response.data);
-
-        // Buscar el formulario del producto
-        const productForm = $('form.oe_product_cart').first();
-        const product_id = productForm.find("input[name='product_id']").val();
-        const product_template_id = productForm.find("input[name='product_template_id']").val();
-
-        if (product_id && product_template_id) {
-            return {
-                product_id: Number(product_id),
-                product_template_id: Number(product_template_id),
-            };
-        }
-
-        return null;
-    } catch (error) {
-        logToFile(`❌ Error extrayendo IDs de ${productUrl}: ${error.message}`);
-        return null;
-    }
-}
 
 async function getProductDetailsFromUrl(productUrl, profitMargin, collection) {
     try {
-        // 1. Extraer los IDs del producto desde la URL
-        const productIds = await extractProductIdsFromUrl(productUrl);
+        // 1. Extraer el código de referencia DIRECTAMENTE de la URL del sitemap
+        const customProductId = extractProductIdFromUrl(productUrl);
 
-        if (!productIds) {
-            logToFile(`⚠️ No se pudieron extraer IDs de: ${productUrl}`);
+        if (!customProductId) {
+            logToFile(`⚠️ No se pudo extraer el product_id de la URL: ${productUrl}`);
             return null;
         }
 
-        // 2. Obtener la URL final (después de redirecciones)
-        const productPageResponse = await client.get(productUrl);
-        const finalProductUrl = productPageResponse.request.res.responseUrl;
+        // 2. Extraer los IDs necesarios para el API desde el HTML
+        const productIds = await extractProductIdsFromHtml(productUrl);
 
-        // 3. Extraer el código de referencia del slug de la URL
-        const urlMatch = finalProductUrl.match(/\/shop\/(\d+)-/);
-
-        let customProductId;
-        if (urlMatch && urlMatch[1]) {
-            customProductId = urlMatch[1];
-        } else {
-            logToFile(`⚠️ Advertencia: No se pudo extraer la Referencia Interna de la URL ${finalProductUrl}. Usando product_id original.`);
-            customProductId = productIds.product_id;
+        if (!productIds) {
+            logToFile(`⚠️ No se pudieron extraer IDs del HTML de: ${productUrl}`);
+            return null;
         }
 
-        // 4. Extraer categoría de la URL si está disponible
-        const categoryMatch = finalProductUrl.match(/\?category=(\d+)/);
+        // 3. Extraer categoría de la URL si está disponible
+        const categoryMatch = productUrl.match(/\?category=(\d+)/);
         const categoryId = categoryMatch ? parseInt(categoryMatch[1]) : null;
 
-        // 5. Obtener detalles del producto via API
-        const response = await client.post(
-            `${BASE_URL}/website_sale/get_combination_info`,
-            {
-                id: 3,
-                jsonrpc: '2.0',
-                method: 'call',
-                params: {
-                    product_template_id: productIds.product_template_id,
-                    product_id: productIds.product_id,
-                    combination: [],
-                    add_qty: 1,
-                    parent_combination: [],
-                },
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    Referer: finalProductUrl,
-                },
-            }
-        );
+        // 4. Obtener detalles del producto via API
+        const productApiData = await fetchProductDetailsFromAPI({
+            product_id: productIds.product_id,
+            product_template_id: productIds.product_template_id,
+            refererUrl: productUrl,
+        });
 
-        const data = response.data.result;
-        const $ = cheerio.load(data.carousel || '');
-        const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
+        if (!productApiData) return null;
 
-        // 6. Buscar producto existente en BD
-        const existingProduct = await collection.findOne({ product_id: customProductId });
-        const existingImageUrl = existingProduct?.image_url || null;
+        // 5. Extraer URL de imagen
+        const imageUrl = extractImageUrl(productApiData.carousel);
 
-        // 7. Procesar imagen
-        const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
-
-        // 8. Extraer marca
-        const brandMatch = data.display_name.match(/"([^"]+)"$/);
-        const brand = brandMatch ? brandMatch[1].trim() : 'generico';
-
-        // 9. Calcular precio final
-        const finalPrice = data.list_price * (1 + profitMargin);
-
-        // 10. Intentar obtener nombre de categoría si tenemos el ID
+        // 6. Intentar obtener nombre de categoría si existe el producto
         let categoryName = null;
-        if (categoryId && existingProduct?.category_name) {
-            categoryName = existingProduct.category_name;
+        if (categoryId) {
+            const existingProduct = await collection.findOne({
+                product_id: parseInt(customProductId)
+            });
+            if (existingProduct?.category_name) {
+                categoryName = existingProduct.category_name;
+            }
         }
 
-        return {
-            product_id: parseInt(customProductId),
-            display_name: data.display_name,
-            final_price: finalPrice,
-            list_price: data.list_price,
-            base_unit_name: data.base_unit_name,
-            image_url: cloudinaryImageUrl,
-            original_image_url: imageUrl,
-            product_type: data.product_type,
-            category_id: categoryId,
-            category_name: categoryName,
-            brand: brand,
-            source_url: finalProductUrl,
-        };
+        // 7. Procesar todos los datos del producto
+        const productData = await processProductData({
+            customProductId,
+            productApiData,
+            imageUrl,
+            categoryId,
+            categoryName,
+            profitMargin,
+            collection,
+            sourceUrl: productUrl,
+        });
+
+        return productData;
     } catch (error) {
         logToFile(`❌ Error detalle producto ${productUrl}: ${error.message}`);
         return null;
