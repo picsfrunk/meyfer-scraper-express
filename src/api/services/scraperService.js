@@ -1,5 +1,5 @@
-const { runCategoryScraper } = require('../../scraper/categoryScraper');
-const { runSitemapScraper } = require('../../scraper/sitemapScraper');
+const { runCategoryScraper } = require('../../scraper/scraper');
+const { runSitemapScraper } = require('../../scraper/scraper');
 const { notifyWebhook } = require('./webhookService');
 
 async function sitemapScraper({ pageDelay = process.env.PAGE_DELAY_MS, webhookUrl, collection }) {
