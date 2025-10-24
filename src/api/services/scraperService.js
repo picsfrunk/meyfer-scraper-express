@@ -6,8 +6,15 @@ async function sitemapScraper({ pageDelay = process.env.PAGE_DELAY_MS, webhookUr
     let processed = 0;
     let status = 'success';
     const source = 'sitemapScraper';
+
+    const options = {
+        sitemapSource: 'https://rhcomercial.com.ar/sitemap.xml',
+        limitProducts: 2,
+        pageDelay: pageDelay,
+        collection: collection,
+    };
     try {
-        processed = await runSitemapScraper(pageDelay, collection);
+        processed = await runSitemapScraper(options);
     } catch (error) {
         status = 'error';
         console.error('[scraperService] Error en sitemapScraper:', error);
