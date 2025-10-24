@@ -1,121 +1,267 @@
-//sitemapScraper.js
 require('dotenv').config();
+const config = require('../config/config');
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { wrapper } = require('axios-cookiejar-support');
+const tough = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
-const config = require('../config/config');
-const {getConfigCollection} = require("../database/mongo");
+const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
+const { processProductImage } = require('../utils/imageUploader');
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
 const BASE_URL = config.baseUrl;
-const PAGE_DELAY_MS = config.pageDelay;
+const DEFAULT_PAGE_DELAY_MS = config.pageDelay;
 
-async function fetchSitemapUrls() {
+const ODOO_USER = config.odooUser;
+const ODOO_PASS = config.odooPass;
+const ODOO_DB = config.odooDb;
+
+const jar = new tough.CookieJar();
+const client = wrapper(axios.create({ jar, withCredentials: true }));
+
+async function loginToOdoo() {
     try {
-        const { data } = await axios.get(`${BASE_URL}/sitemap.xml`);
-        const urls = [];
-        const $ = cheerio.load(data, { xmlMode: true });
-
-        $('url > loc').each((_, el) => {
-            const loc = $(el).text();
-            if (loc.includes('/shop/')) {
-                urls.push(loc);
-                if (urls.length === 10) return false; // corta el .each de cheerio
-            }
+        const res = await client.post(`${BASE_URL}/web/session/authenticate`, {
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+                db: ODOO_DB,
+                login: ODOO_USER,
+                password: ODOO_PASS,
+            },
+        }, {
+            headers: { 'Content-Type': 'application/json' },
         });
-        console.log(urls);
 
-        return urls;
+        if (res.data.result?.uid) {
+            console.log('✔ Login exitoso como:', ODOO_USER);
+            logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
+            return true;
+        } else {
+            logToFile('❌ Falló el login.');
+            return false;
+        }
     } catch (err) {
-        logToFile(`❌ Error al obtener sitemap: ${err.message}`);
-        return [];
+        logToFile(`❌ Error durante login: ${err.message}`);
+        return false;
     }
 }
 
-
-async function scrapeProductFromUrl(url, profitMargin) {
+async function extractProductIdsFromUrl(productUrl) {
     try {
-        const { data } = await axios.get(url);
-        const $ = cheerio.load(data);
+        // Hacer request para obtener los IDs desde la página
+        const response = await client.get(productUrl);
+        const $ = cheerio.load(response.data);
 
-        const jsonData = JSON.parse($('#product_details').attr('data-product') || '{}');
-        const name = jsonData.name || $('h1.product_name').text();
-        const price = jsonData.list_price || $('span.oe_price').text();
-        const productId = jsonData.product_id || url.split('-').pop();
-        const imageUrl = $('#product_detail img').attr('src')
-            ? `${BASE_URL}${$('#product_detail img').attr('src')}`
-            : null;
+        // Buscar el formulario del producto
+        const productForm = $('form.oe_product_cart').first();
+        const product_id = productForm.find("input[name='product_id']").val();
+        const product_template_id = productForm.find("input[name='product_template_id']").val();
 
-        const basePrice = parseFloat(jsonData.price) || parseFloat(price) || 0;
-        const finalPrice = basePrice * (1 + profitMargin);
+        if (product_id && product_template_id) {
+            return {
+                product_id: Number(product_id),
+                product_template_id: Number(product_template_id),
+            };
+        }
 
-        return {
-            product_id: Number(productId),
-            display_name: name,
-            list_price: basePrice,
-            final_price: finalPrice,
-            image_url: imageUrl,
-            source_url: url
-        };
-    } catch (err) {
-        logToFile(`❌ Error scrapeando ${url}: ${err.message}`);
+        return null;
+    } catch (error) {
+        logToFile(`❌ Error extrayendo IDs de ${productUrl}: ${error.message}`);
         return null;
     }
 }
 
-async function runSitemapScraper(pageDelay = PAGE_DELAY_MS, collection) {
-    const urls = await fetchSitemapUrls();
-    const TOTAL_ITEMS_TO_SCRAPE = urls.length;
-    const LIMIT_ITEMS_TO_PROCESS = process.env.GLOBAL_SITEMAP_LIMIT || 100;
+async function getProductDetailsFromUrl(productUrl, profitMargin, collection) {
+    try {
+        // 1. Extraer los IDs del producto desde la URL
+        const productIds = await extractProductIdsFromUrl(productUrl);
 
-    if (!urls.length) return 0;
+        if (!productIds) {
+            logToFile(`⚠️ No se pudieron extraer IDs de: ${productUrl}`);
+            return null;
+        }
 
-    const urlsToProcess = urls.slice(0, LIMIT_ITEMS_TO_PROCESS);
+        // 2. Obtener la URL final (después de redirecciones)
+        const productPageResponse = await client.get(productUrl);
+        const finalProductUrl = productPageResponse.request.res.responseUrl;
 
-    let processed = 0;
-    let startTime = Date.now();
-    let estimationShown = false;
+        // 3. Extraer el código de referencia del slug de la URL
+        const urlMatch = finalProductUrl.match(/\/shop\/(\d+)-/);
 
+        let customProductId;
+        if (urlMatch && urlMatch[1]) {
+            customProductId = urlMatch[1];
+        } else {
+            logToFile(`⚠️ Advertencia: No se pudo extraer la Referencia Interna de la URL ${finalProductUrl}. Usando product_id original.`);
+            customProductId = productIds.product_id;
+        }
+
+        // 4. Extraer categoría de la URL si está disponible
+        const categoryMatch = finalProductUrl.match(/\?category=(\d+)/);
+        const categoryId = categoryMatch ? parseInt(categoryMatch[1]) : null;
+
+        // 5. Obtener detalles del producto via API
+        const response = await client.post(
+            `${BASE_URL}/website_sale/get_combination_info`,
+            {
+                id: 3,
+                jsonrpc: '2.0',
+                method: 'call',
+                params: {
+                    product_template_id: productIds.product_template_id,
+                    product_id: productIds.product_id,
+                    combination: [],
+                    add_qty: 1,
+                    parent_combination: [],
+                },
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    Referer: finalProductUrl,
+                },
+            }
+        );
+
+        const data = response.data.result;
+        const $ = cheerio.load(data.carousel || '');
+        const imageUrl = $('img').attr('src') ? `${BASE_URL}${$('img').attr('src')}` : null;
+
+        // 6. Buscar producto existente en BD
+        const existingProduct = await collection.findOne({ product_id: customProductId });
+        const existingImageUrl = existingProduct?.image_url || null;
+
+        // 7. Procesar imagen
+        const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
+
+        // 8. Extraer marca
+        const brandMatch = data.display_name.match(/"([^"]+)"$/);
+        const brand = brandMatch ? brandMatch[1].trim() : 'generico';
+
+        // 9. Calcular precio final
+        const finalPrice = data.list_price * (1 + profitMargin);
+
+        // 10. Intentar obtener nombre de categoría si tenemos el ID
+        let categoryName = null;
+        if (categoryId && existingProduct?.category_name) {
+            categoryName = existingProduct.category_name;
+        }
+
+        return {
+            product_id: parseInt(customProductId),
+            display_name: data.display_name,
+            final_price: finalPrice,
+            list_price: data.list_price,
+            base_unit_name: data.base_unit_name,
+            image_url: cloudinaryImageUrl,
+            original_image_url: imageUrl,
+            product_type: data.product_type,
+            category_id: categoryId,
+            category_name: categoryName,
+            brand: brand,
+            source_url: finalProductUrl,
+        };
+    } catch (error) {
+        logToFile(`❌ Error detalle producto ${productUrl}: ${error.message}`);
+        return null;
+    }
+}
+
+async function runSitemapScraper({
+                                     pageDelay = DEFAULT_PAGE_DELAY_MS,
+                                     collection,
+                                     sitemapSource = null,
+                                     limitProducts = null
+                                 }) {
+    const loggedIn = await loginToOdoo();
+    if (!loggedIn) throw new Error('Login fallido');
+
+    // Obtener configuración de margen de ganancia
     const configCollection = await getConfigCollection();
     const configDoc = await configCollection.findOne({ key: 'profitMargin' });
     const profitMargin = configDoc ? configDoc.value / 100 : 1;
 
-    for (const url of urlsToProcess) {
-        const data = await scrapeProductFromUrl(url, profitMargin);
-        if (data) {
-            console.log(data);
+    // Obtener URLs de productos desde la colección del sitemap
+    const sitemapCollection = await getSitemapCollection();
+
+    const query = sitemapSource ? { source: sitemapSource } : {};
+    const sitemapDoc = await sitemapCollection.findOne(query);
+
+    if (!sitemapDoc) {
+        throw new Error('No se encontró documento de sitemap en la base de datos');
+    }
+
+    const productUrls = sitemapDoc.productUrls || [];
+
+    if (!productUrls.length) {
+        throw new Error('No se encontraron URLs de productos en el sitemap');
+    }
+
+    console.log(`📋 Total de productos en sitemap: ${productUrls.length}`);
+    logToFile(`📋 Total de productos en sitemap: ${productUrls.length}`);
+
+    // Limitar productos si se especifica
+    const urlsToProcess = limitProducts
+        ? productUrls.slice(0, limitProducts)
+        : productUrls;
+
+    console.log(`🚀 Procesando ${urlsToProcess.length} productos...`);
+    logToFile(`🚀 Procesando ${urlsToProcess.length} productos...`);
+
+    let total = 0;
+    let uploaded = 0;
+    let errors = 0;
+
+    for (let i = 0; i < urlsToProcess.length; i++) {
+        const productUrl = urlsToProcess[i];
+        const progress = `[${i + 1}/${urlsToProcess.length}]`;
+
+        console.log(`${progress} Procesando: ${productUrl}`);
+
+        const details = await getProductDetailsFromUrl(productUrl, profitMargin, collection);
+
+        if (details) {
             await collection.updateOne(
-                { product_id: data.product_id },
-                { $set: data },
+                { product_id: details.product_id },
+                { $set: details },
                 { upsert: true }
             );
-            processed++;
-            logToFile(`✔ Guardado desde sitemap: ${data.product_id} - ${data.display_name}`);
+            total++;
+
+            if (details.image_url && details.image_url.includes('cloudinary.com')) {
+                uploaded++;
+            }
+
+            logToFile(`✔ ${progress} Guardado: ${details.product_id} - ${details.display_name}`);
+            console.log(`\t✔ Guardado: ${details.product_id} - ${details.display_name}`);
+        } else {
+            errors++;
+            logToFile(`✘ ${progress} Error procesando: ${productUrl}`);
+            console.log(`\t✘ Error procesando producto`);
         }
 
         await delay(pageDelay);
-
-        // Estimación con primeros 10 ítems
-        if (processed === 10 && !estimationShown) {
-            const elapsed = (Date.now() - startTime) / 1000;
-            const avgTimePerItem = elapsed / 10;
-            const estimatedTotal = avgTimePerItem * TOTAL_ITEMS_TO_SCRAPE;
-
-            const msg = `⏱️ Estimación: ${TOTAL_ITEMS_TO_SCRAPE} artículos tomarían ~${Math.round(estimatedTotal)} segundos (${(estimatedTotal / 60).toFixed(2)} minutos)`;
-            console.log(msg);
-            logToFile(msg);
-            estimationShown = true;
-        }
     }
 
-    const totalElapsed = (Date.now() - startTime) / 1000;
-    const endMsg = `✅ Finalizado: ${processed}/${LIMIT_ITEMS_TO_PROCESS} artículos procesados en ${Math.round(totalElapsed)} segundos (${(totalElapsed / 60).toFixed(2)} minutos)`;
-    console.log(endMsg);
-    logToFile(endMsg);
+    const summary = `
+✅ Scraping de sitemap finalizado
+   Total procesados: ${total}
+   Errores: ${errors}
+   Imágenes en Cloudinary: ${uploaded}
+   Tasa de éxito: ${((total / urlsToProcess.length) * 100).toFixed(2)}%
+    `;
 
-    return processed;
+    logToFile(summary);
+    console.log(summary);
+
+    return {
+        total,
+        errors,
+        uploaded,
+        processed: urlsToProcess.length
+    };
 }
-
 
 module.exports = { runSitemapScraper };

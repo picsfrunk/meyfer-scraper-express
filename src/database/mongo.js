@@ -22,4 +22,9 @@ async function getScrapedCollection() {
     return database.collection(process.env.MONGO_COLLECTION || 'scraped-products');
 }
 
-module.exports = { getDB, getConfigCollection, getScrapedCollection };
+async function getSitemapCollection() {
+    const database = await getDB();
+    return database.collection('sitemap_analysis');
+}
+
+module.exports = { getDB, getConfigCollection, getScrapedCollection, getSitemapCollection };
