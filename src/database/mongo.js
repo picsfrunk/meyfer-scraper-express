@@ -24,7 +24,7 @@ async function getScrapedCollection() {
 
 async function getSitemapCollection() {
     const database = await getDB();
-    return database.collection('sitemap_analysis');
+    return database.collection(process.env.SITEMAP_COLLECTION || 'sitemap_analysis');
 }
 
 module.exports = { getDB, getConfigCollection, getScrapedCollection, getSitemapCollection };

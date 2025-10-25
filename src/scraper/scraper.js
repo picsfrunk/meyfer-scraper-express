@@ -1,5 +1,9 @@
 require('dotenv').config();
 const cheerio = require('cheerio');
+const xml2js = require('xml2js');
+const https = require('https');
+const http = require('http');
+
 const config = require('../config/config');
 const RUBROS = require('../config/rubros');
 const logToFile = require('../utils/logToFile');
@@ -14,6 +18,38 @@ const {
     processProductData,
 } = require('../utils/scraperUtils');
 
+/**
+ * ============================================================
+ * SCRAPER PRINCIPAL - FLUJO DE USO
+ * ============================================================
+ *
+ * 1. ANÁLISIS DE SITEMAP (ejecutar primero, una sola vez o periódicamente):
+ *    const { analyzeSitemap } = require('./scrapers/scraper');
+ *    await analyzeSitemap();
+ *
+ *    → Descarga sitemap.xml y guarda categorías/productos/marcas en MongoDB
+ *
+ * 2. SCRAPERS (ejecutar después del análisis):
+ *
+ *    A) Category Scraper - Scrapea por categorías específicas:
+ *       const { runCategoryScraper } = require('./scrapers/scraper');
+ *       await runCategoryScraper({
+ *           collection,
+ *           categoryIds: 'all',  // o un ID específico
+ *           enableLogs: true
+ *       });
+ *
+ *    B) Sitemap Scraper - Scrapea todos los productos del sitemap:
+ *       const { runSitemapScraper } = require('./scrapers/scraper');
+ *       await runSitemapScraper({
+ *           collection,
+ *           limitProducts: 10,  // opcional
+ *           enableLogs: true
+ *       });
+ *
+ * ============================================================
+ */
+
 // ============================================================
 // UTILS
 // ============================================================
@@ -24,6 +60,163 @@ function log(message, enableLogs = true) {
     if (enableLogs) {
         console.log(message);
         logToFile(message);
+    }
+}
+
+async function fetchSitemap(url) {
+    return new Promise((resolve, reject) => {
+        const httpClient = url.startsWith('https') ? https : http;
+        httpClient.get(url, (res) => {
+            let data = '';
+            if (res.statusCode === 301 || res.statusCode === 302) {
+                return fetchSitemap(res.headers.location).then(resolve).catch(reject);
+            }
+            if (res.statusCode !== 200) {
+                return reject(new Error(`Failed to fetch sitemap: HTTP ${res.statusCode}`));
+            }
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => resolve(data));
+        }).on('error', reject);
+    });
+}
+
+// ============================================================
+// ANALIZADOR DE SITEMAP
+// ============================================================
+
+async function analyzeSitemap() {
+    const sitemapUrl = process.env.SITEMAP_URL;
+
+    if (!sitemapUrl) {
+        throw new Error('Falta variable de entorno: SITEMAP_URL');
+    }
+
+    try {
+        log(`📥 Descargando sitemap desde: ${sitemapUrl}`);
+
+        let content = await fetchSitemap(sitemapUrl);
+        content = content.replace('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"', '');
+
+        const parser = new xml2js.Parser();
+        const result = await parser.parseStringPromise(content);
+        const urls = result.urlset.url.map(url => url.loc[0].trim());
+
+        const products = [];
+        const brands = [];
+        const categoriesData = {};
+        const brandsData = {};
+        const productsByCategory = {};
+        const productsByBrand = {};
+
+        const productPattern = /\/shop\/[A-Za-z0-9\-]+/i;
+        const brandPattern = /\/shop\/category\/por-marca-?([A-Za-z0-9\-]*)/i;
+        const categoryPattern = /\/shop\/category\/por-rubro-([A-Za-z0-9\-]+)/i;
+
+        log(`📊 Procesando ${urls.length} URLs...`);
+
+        for (const url of urls) {
+            if (
+                url.includes('/shop/') &&
+                !url.includes('/shop/category/') &&
+                !url.replace(/\/$/, '').endsWith('/shop') &&
+                productPattern.test(url)
+            ) {
+                products.push(url);
+                try {
+                    const slug = url.split('/shop/')[1];
+                    const matchCategoryProduct = slug.match(/^([A-Za-z\-]+)-\d+/);
+                    if (matchCategoryProduct) {
+                        const categoryName = matchCategoryProduct[1];
+                        productsByCategory[categoryName] = (productsByCategory[categoryName] || 0) + 1;
+                    }
+                } catch (_) {}
+                for (const brandSlug in brandsData) {
+                    if (url.includes(brandSlug)) {
+                        productsByBrand[brandSlug] = (productsByBrand[brandSlug] || 0) + 1;
+                    }
+                }
+            } else if (brandPattern.test(url)) {
+                const match = url.match(brandPattern);
+                const brandSlug = match[1];
+                if (!brandSlug) continue;
+
+                const parts = brandSlug.split('-');
+                let brandId = null;
+                let brandName = brandSlug;
+
+                if (parts.length > 1 && !isNaN(parts[parts.length - 1])) {
+                    brandId = parseInt(parts[parts.length - 1]);
+                    brandName = parts.slice(0, -1).join('-');
+                }
+
+                brandsData[brandName] = brandId;
+                brands.push(url);
+            } else if (categoryPattern.test(url)) {
+                const match = url.match(categoryPattern);
+                const categorySlug = match[1];
+                if (!isNaN(categorySlug)) continue;
+
+                const parts = categorySlug.split('-');
+                let categoryId = null;
+                let categoryName = categorySlug;
+
+                if (parts.length > 1 && !isNaN(parts[parts.length - 1])) {
+                    categoryId = parseInt(parts[parts.length - 1]);
+                    categoryName = parts.slice(0, -1).join('-');
+                }
+
+                categoriesData[categoryName] = categoryId;
+            }
+        }
+
+        const sortedCategories = Object.entries(categoriesData).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+        const sortedBrands = Object.entries(brandsData).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+
+        const categoriesArray = sortedCategories.map(([name, id]) => ({
+            id,
+            name: name.split('-').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('/'),
+            slug: name,
+            products: productsByCategory[name] || 0
+        }));
+
+        const brandsArray = sortedBrands.map(([name, id]) => ({
+            id,
+            name,
+            products: productsByBrand[name] || 0,
+            urls: brands.filter(url => url.includes(name))
+        }));
+
+        const catalogDocument = {
+            source: sitemapUrl,
+            analyzedAt: new Date(),
+            summary: {
+                totalProducts: products.length,
+                totalBrands: Object.keys(brandsData).length,
+                totalCategories: Object.keys(categoriesData).length,
+            },
+            categories: categoriesArray,
+            brands: brandsArray,
+            productUrls: products,
+            brandUrls: brands,
+        };
+
+        // Usar la función de mongo.js
+        const sitemapCollection = await getSitemapCollection();
+        await sitemapCollection.replaceOne(
+            { source: sitemapUrl },
+            catalogDocument,
+            { upsert: true }
+        );
+
+        log(`✅ Sitemap guardado en colección: ${process.env.SITEMAP_COLLECTION || 'sitemap_analysis'}`);
+        log(`   📦 Productos: ${products.length}`);
+        log(`   🏷️  Marcas: ${Object.keys(brandsData).length}`);
+        log(`   🧰 Categorías: ${Object.keys(categoriesData).length}`);
+
+        return catalogDocument;
+    } catch (error) {
+        log(`❌ Error analizando sitemap: ${error.message}`, true);
+        throw error;
     }
 }
 
@@ -92,17 +285,48 @@ class SitemapProductStrategy {
         this.sitemapSource = sitemapSource;
         this.limitProducts = limitProducts;
         this.enableLogs = enableLogs;
+        this.categoriesMap = null;
     }
 
     async getProductList() {
         const sitemapCollection = await getSitemapCollection();
         const query = this.sitemapSource ? { source: this.sitemapSource } : {};
-        const sitemapDoc = await sitemapCollection.findOne(query);
+        let sitemapDoc = await sitemapCollection.findOne(query);
 
-        if (!sitemapDoc) throw new Error('No se encontró documento de sitemap en DB.');
+        // Si no existe el documento, analizar sitemap automáticamente
+        if (!sitemapDoc) {
+            log('⚠️ No se encontró documento de sitemap en DB. Ejecutando análisis automático...', this.enableLogs);
+
+            try {
+                await analyzeSitemap();
+                log('✅ Análisis de sitemap completado', this.enableLogs);
+
+                // Intentar obtener el documento nuevamente
+                sitemapDoc = await sitemapCollection.findOne(query);
+
+                if (!sitemapDoc) {
+                    throw new Error('No se pudo crear el documento de sitemap después del análisis');
+                }
+            } catch (error) {
+                throw new Error(`Error al analizar sitemap: ${error.message}`);
+            }
+        }
 
         const urls = sitemapDoc.productUrls || [];
         if (!urls.length) throw new Error('No se encontraron URLs de productos.');
+
+        // Crear un mapa de categorías por slug para hacer matching
+        this.categoriesMap = {};
+        if (sitemapDoc.categories && Array.isArray(sitemapDoc.categories)) {
+            sitemapDoc.categories.forEach(cat => {
+                if (cat.slug) {
+                    this.categoriesMap[cat.slug] = {
+                        id: cat.id,
+                        name: cat.name
+                    };
+                }
+            });
+        }
 
         const selectedUrls = this.limitProducts ? urls.slice(0, this.limitProducts) : urls;
 
@@ -110,16 +334,45 @@ class SitemapProductStrategy {
             const templateMatch = url.match(/-(\d+)$/);
             const categoryMatch = url.match(/\?category=(\d+)/);
 
+            // Intentar extraer categoría del slug del producto
+            const slugMatch = url.match(/\/shop\/\d+-([a-z\-]+)/);
+            let categoryId = categoryMatch ? parseInt(categoryMatch[1]) : null;
+            let categoryName = null;
+
+            // Si tenemos un slug, buscar en el mapa de categorías
+            if (slugMatch && slugMatch[1] && this.categoriesMap) {
+                const productSlugParts = slugMatch[1].split('-');
+
+                // Intentar matchear con categorías conocidas
+                for (const catSlug in this.categoriesMap) {
+                    const catSlugParts = catSlug.split('-');
+                    const matchCount = catSlugParts.filter(part =>
+                        productSlugParts.includes(part)
+                    ).length;
+
+                    // Si hay match significativo
+                    if (matchCount > 0) {
+                        categoryId = this.categoriesMap[catSlug].id;
+                        categoryName = this.categoriesMap[catSlug].name;
+                        break;
+                    }
+                }
+            }
+
             return {
                 product_template_id: templateMatch ? Number(templateMatch[1]) : null,
                 product_id: null,
                 sourceUrl: url,
-                categoryId: categoryMatch ? parseInt(categoryMatch[1]) : null,
-                categoryName: null,
+                categoryId: categoryId,
+                categoryName: categoryName,
             };
         }).filter(p => p.product_template_id);
 
         log(`📋 Productos en sitemap: ${productList.length}`, this.enableLogs);
+
+        const withCategory = productList.filter(p => p.categoryId).length;
+        log(`📂 Productos con categoría detectada: ${withCategory}/${productList.length}`, this.enableLogs);
+
         return productList;
     }
 
@@ -144,17 +397,14 @@ class ScraperRunner {
 
     async initialize() {
         if (!await loginToOdoo()) throw new Error('Login fallido a Odoo.');
-
         const configCollection = await getConfigCollection();
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
         this.profitMargin = profitDoc ? profitDoc.value / 100 : 1;
-
         log(`🚀 Iniciando: ${this.strategy.getName()}`, this.enableLogs);
     }
 
     async run() {
         await this.initialize();
-
         const products = await this.strategy.getProductList();
         let total = 0, uploaded = 0, errors = 0;
 
@@ -190,7 +440,6 @@ class ScraperRunner {
     `;
 
         log(summary, this.enableLogs);
-
         return { total, errors, uploaded, processed: products.length };
     }
 
@@ -199,7 +448,6 @@ class ScraperRunner {
             const productUrl = `${BASE_URL}/shop/${product.product_template_id}`;
             const response = await client.get(productUrl);
             const finalUrl = response.request.res.responseUrl;
-
             const customId = extractProductIdFromUrl(finalUrl);
             if (!customId) return null;
 
@@ -244,25 +492,20 @@ class ScraperRunner {
 
 async function runCategoryScraper(options) {
     const strategy = new CategoryProductStrategy(options);
-    const runner = new ScraperRunner({
-        ...options,
-        strategy,
-    });
+    const runner = new ScraperRunner({ ...options, strategy });
     return runner.run();
 }
 
 async function runSitemapScraper(options) {
     const strategy = new SitemapProductStrategy(options);
-    const runner = new ScraperRunner({
-        ...options,
-        strategy,
-    });
+    const runner = new ScraperRunner({ ...options, strategy });
     return runner.run();
 }
 
 module.exports = {
     runCategoryScraper,
     runSitemapScraper,
+    analyzeSitemap,
     CategoryProductStrategy,
     SitemapProductStrategy,
     ScraperRunner,
