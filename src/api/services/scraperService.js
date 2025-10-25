@@ -99,7 +99,7 @@ async function sitemapScraper({
  */
 async function categoryScraper({
                                    categoryIds,
-                                   pageDelay,
+                                   pageDelay = process.env.PAGE_DELAY_MS,
                                    categoryDelay,
                                    webhookUrl,
                                    collection,
