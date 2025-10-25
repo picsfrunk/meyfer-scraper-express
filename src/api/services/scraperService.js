@@ -1,5 +1,57 @@
-const { runCategoryScraper, runSitemapScraper } = require('../../scraper/scraper');
+const { runCategoryScraper, runSitemapScraper, analyzeSitemap } = require('../../scraper/scraper');
 const { notifyWebhook } = require('./webhookService');
+
+/**
+ * Analiza el sitemap.xml y guarda la estructura en MongoDB.
+ * Esta función descarga y procesa el sitemap para extraer categorías, marcas y productos.
+ */
+async function analyzeSitemapService({ webhookUrl }) {
+    const source = 'sitemapAnalysis';
+    let status = 'success';
+    let result = {
+        totalProducts: 0,
+        totalBrands: 0,
+        totalCategories: 0,
+        source: null,
+        analyzedAt: null
+    };
+
+    try {
+        const catalogDocument = await analyzeSitemap();
+
+        result = {
+            totalProducts: catalogDocument.summary.totalProducts,
+            totalBrands: catalogDocument.summary.totalBrands,
+            totalCategories: catalogDocument.summary.totalCategories,
+            source: catalogDocument.source,
+            analyzedAt: catalogDocument.analyzedAt
+        };
+
+        console.log(`[scraperService] Sitemap analizado exitosamente: ${result.totalProducts} productos, ${result.totalCategories} categorías, ${result.totalBrands} marcas`);
+    } catch (error) {
+        status = 'error';
+        console.error(`[scraperService] Error en ${source}:`, error);
+    } finally {
+        if (webhookUrl) {
+            await notifyWebhook({
+                webhookUrl,
+                source,
+                status,
+                processed: result.totalProducts,
+                total: result.totalProducts,
+                errors: status === 'error' ? 1 : 0,
+                uploaded: 0,
+                metadata: {
+                    categories: result.totalCategories,
+                    brands: result.totalBrands,
+                    analyzedAt: result.analyzedAt
+                }
+            });
+        }
+    }
+
+    return result;
+}
 
 /**
  * Ejecuta el scraper basado en sitemap.
@@ -26,15 +78,17 @@ async function sitemapScraper({
         status = 'error';
         console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
-        await notifyWebhook({
-            webhookUrl,
-            source,
-            status,
-            processed: result.processed,
-            total: result.total,
-            errors: result.errors,
-            uploaded: result.uploaded,
-        });
+        if (webhookUrl) {
+            await notifyWebhook({
+                webhookUrl,
+                source,
+                status,
+                processed: result.processed,
+                total: result.total,
+                errors: result.errors,
+                uploaded: result.uploaded,
+            });
+        }
     }
 
     return result;
@@ -65,21 +119,24 @@ async function categoryScraper({
         status = 'error';
         console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
-        await notifyWebhook({
-            webhookUrl,
-            source,
-            status,
-            processed: result.processed,
-            total: result.total,
-            errors: result.errors,
-            uploaded: result.uploaded,
-        });
+        if (webhookUrl) {
+            await notifyWebhook({
+                webhookUrl,
+                source,
+                status,
+                processed: result.processed,
+                total: result.total,
+                errors: result.errors,
+                uploaded: result.uploaded,
+            });
+        }
     }
 
     return result;
 }
 
 module.exports = {
+    analyzeSitemapService,
     sitemapScraper,
     categoryScraper,
 };

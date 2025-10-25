@@ -11,10 +11,8 @@ const sitemapScraperController = async (req, res) => {
 
         const collection = req.collection;
 
-        // Respuesta inmediata
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
-        // Ejecutar scraper en background
         const result = await ScraperService.sitemapScraper({
             sitemapSource,
             limitProducts,
@@ -43,10 +41,8 @@ const categoryScraperController = async (req, res) => {
 
         const collection = req.collection;
 
-        // Respuesta inmediata
         res.status(202).json({ status: 'accepted', message: 'Category scraper started' });
 
-        // Ejecutar scraper en background
         const result = await ScraperService.categoryScraper({
             categoryIds,
             pageDelay,
@@ -63,8 +59,31 @@ const categoryScraperController = async (req, res) => {
     }
 };
 
+/**
+ * Nuevo Controller para iniciar el análisis del Sitemap.
+ * Solo necesita el webhookUrl y responde inmediatamente (202 Accepted).
+ */
+const analyzeSitemapController = async (req, res) => {
+    try {
+        const { webhookUrl } = req.body;
+
+        res.status(202).json({ status: 'accepted', message: 'Sitemap analysis started' });
+
+        const result = await ScraperService.analyzeSitemapService({ webhookUrl });
+
+        console.log(`[controller] Sitemap analysis finished:`, result);
+
+    } catch (error) {
+        console.error('[controller] Error en analyzeSitemapController:', error);
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
 
 module.exports = {
     categoryScraperController,
     sitemapScraperController,
+    analyzeSitemapController,
 };
