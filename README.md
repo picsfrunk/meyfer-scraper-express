@@ -1,118 +1,108 @@
-# Meyfer Scraper Microservice
+# Scraper API
 
-Este microservicio se encarga de realizar tareas de scraping sobre un sitio web definido por variables de entorno y enviar los resultados a un endpoint webhook especificado por el cliente.
+Este documento describe los endpoints del scraper actualizado, tanto para categorías como para sitemap. Los scrapers ahora devuelven métricas completas y notifican un webhook con estadísticas del proceso.
 
-## Endpoints
+Endpoints:
 
-### POST `/api/scraper/sitemap/`
+1. Category Scraper
 
-Inicia un proceso de scraping sobre el sitemap del sitio web base.
+* URL: `/api/scraper/category`
+* Método: `POST`
+* Descripción: Ejecuta el scraper de productos por categorías.
+* Request body ejemplo:
 
-**Body esperado (JSON):**
-
-```
+```json
 {
-  "pageDelay": 250,
-  "webhookUrl": "http://localhost:3001/api/webhook/scraper"
+  "categoryId": "all",
+  "pageDelay": 500,
+  "categoryDelay": 1000,
+  "webhookUrl": "https://example.com/webhook"
 }
 ```
 
-- `pageDelay`: Tiempo en milisegundos entre solicitudes a páginas.
-- `webhookUrl`: URL del backend receptor de la notificación cuando termina el scraping.
+* Campos:
 
-**Descripción:** Este endpoint recorrerá las URLs listadas en el sitemap del sitio base y extraerá los datos de cada página. Al finalizar, notificará al `webhookUrl`.
+    * `categoryId`: "all" o ID numérico de la categoría.
+    * `pageDelay`: Tiempo en ms entre procesamiento de productos.
+    * `categoryDelay`: Tiempo en ms entre categorías.
+    * `webhookUrl`: URL donde se notifica el resultado del scraping.
+* Response inicial:
 
----
-
-### POST `/api/scraper/category/`
-
-Inicia el scraping sobre un conjunto de categorías (rubros) predefinidas.
-
-**Body esperado (JSON):**
-
-```
+```json
 {
-  "rubros": 4,
-  "pageDelay": 100,
-  "categoryDelay": 300,
-  "webhookUrl": "http://localhost:3001/api/webhook/scraper"
+  "status": "accepted",
+  "message": "Category scraper started"
 }
 ```
 
-- `rubros`: Número entero que define cuántos rubros se procesan. Si se omite, se procesan todos los rubros definidos en `rubros.js`.
-- `pageDelay`: Demora entre páginas dentro de una categoría.
-- `categoryDelay`: Demora entre cada categoría.
-- `webhookUrl`: URL para notificar al finalizar el proceso.
+* Webhook payload ejemplo:
 
-**Descripción:** Este endpoint itera por cada categoría (hasta `rubros`), extrayendo los productos y enviando los resultados al `webhookUrl`.
-
----
-
-## Arquitectura
-
-Este microservicio está dividido en las siguientes capas:
-
-- `controllers`: Orquestan la lógica de cada endpoint.
-- `services`: Ejecutan la lógica de negocio (scraping y notificaciones).
-- `scraper`: Contiene lógica pura de scraping específica para sitemap y categorías.
-- `utils`: Funciones auxiliares (e.g. logueo a archivos).
-- `config`: Archivos de configuración como delays, rubros, etc.
-- `database`: Conexión con MongoDB.
-
-## Webhook
-
-El microservicio notificará al `webhookUrl` enviado en cada solicitud POST al finalizar la tarea de scraping. La carga útil del webhook puede contener un resumen o detalle de los datos procesados.
-
-## Variables de entorno (.env)
-
-```
-MONGO_URI=mongodb://root:root@localhost:27018/?authSource=admin
-MONGO_DB=catalog
-MONGO_COLLECTION=products
-
-ODOO_USER=mail@gmail.com
-ODOO_PASS=odoopass
-ODOO_DB=odoodb
-
-BASE_URL=https://web.com
-
-PAGE_DELAY_MS=1500
-CATEGORY_DELAY_MS=3000
-
-PORT=3000
+```json
+{
+  "source": "categoryScraper",
+  "status": "success",
+  "processed": 154,
+  "stats": {
+    "durationMs": 12345,
+    "totalErrors": 2,
+    "startedAt": "2025-10-24T20:00:00.000Z",
+    "finishedAt": "2025-10-24T20:20:00.000Z"
+  },
+  "timestamp": "2025-10-24T20:20:01.000Z"
+}
 ```
 
-## Instalación local
+2. Sitemap Scraper
 
-```bash
-git clone https://github.com/tu-usuario/meyfer-scraper-microservice.git
-cd meyfer-scraper-microservice
-npm install
-npm start
+* URL: `/api/scraper/sitemap`
+* Método: `POST`
+* Descripción: Ejecuta el scraper basado en URLs de sitemap.
+* Request body ejemplo:
+
+```json
+{
+  "sitemapSource": "https://rhcomercial.com.ar/sitemap.xml",
+  "limitProducts": 100,
+  "pageDelay": 500,
+  "webhookUrl": "https://example.com/webhook"
+}
 ```
 
-## Deploy con Docker
+* Campos:
 
-Ver el archivo `Dockerfile` y `docker-compose.yml` para despliegue.
+    * `sitemapSource`: URL del sitemap (opcional).
+    * `limitProducts`: Limitar la cantidad de productos a procesar (opcional).
+    * `pageDelay`: Tiempo en ms entre procesamiento de productos.
+    * `webhookUrl`: URL donde se notifica el resultado del scraping.
+* Response inicial:
 
----
+```json
+{
+  "status": "accepted",
+  "message": "Sitemap scraper started"
+}
+```
 
+* Webhook payload ejemplo:
 
-### Commit [`6790f94`](https://github.com/picsfrunk/meyfer-scraper-express/commit/6790f9469eef1d3f460d33935eb4b2ae3d59fb78)
-**fix: bug en endpoint sitemap y compatibilidad webhook**
+```json
+{
+  "source": "sitemapScraper",
+  "status": "success",
+  "processed": 100,
+  "stats": {
+    "durationMs": 6789,
+    "totalErrors": 0,
+    "startedAt": "2025-10-24T20:00:00.000Z",
+    "finishedAt": "2025-10-24T20:10:00.000Z"
+  },
+  "timestamp": "2025-10-24T20:10:01.000Z"
+}
+```
 
-- Se corrigió el endpoint `/api/scraper/sitemap/` para asegurar que el payload enviado al webhook del backend cumpla con el formato esperado (`source`, `status`, `processed`, `timestamp`).
-- Ahora el microservicio scraper es compatible con las validaciones del backend y reporta correctamente el estado al finalizar el proceso de scraping.
-- Se mejoró el control de errores y el formato de la notificación enviada, evitando rechazos o errores 400 por parte del backend.
-- Refactor en el service del scraper para limpiar la estructura del código y hacer más clara la notificación al webhook.
+Notas importantes:
 
----
-
-### Notas adicionales
-
-- Con estos cambios, la integración entre el backend y el scraper es más robusta y escalable.
-- El backend puede recibir notificaciones de fin de proceso de scraping sin errores de validación y el frontend puede orquestar ambos procesos de forma sencilla.
-
-## Licencia
-
-MIT
+* Ambos scrapers devuelven respuesta inmediata `202 Accepted` y procesan los datos en segundo plano.
+* El webhook recibe métricas completas del scraping (`processed`, `errors`, `durationMs`, `startedAt`, `finishedAt`).
+* Los delays (`pageDelay` y `categoryDelay`) ayudan a evitar bloqueos por requests simultáneas.
+* Compatible con la nueva versión de `notifyWebhook`, que maneja resultados completos y mantiene compatibilidad hacia atrás con `processed` solo.

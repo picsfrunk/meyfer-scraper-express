@@ -1,51 +1,82 @@
-const { runCategoryScraper } = require('../../scraper/scraper');
-const { runSitemapScraper } = require('../../scraper/scraper');
+const { runCategoryScraper, runSitemapScraper } = require('../../scraper/scraper');
 const { notifyWebhook } = require('./webhookService');
 
-async function sitemapScraper({ pageDelay = process.env.PAGE_DELAY_MS, webhookUrl, collection }) {
-    let processed = 0;
-    let status = 'success';
+/**
+ * Ejecuta el scraper basado en sitemap.
+ */
+async function sitemapScraper({
+                                  sitemapSource,
+                                  limitProducts = 1000,
+                                  pageDelay = process.env.PAGE_DELAY_MS,
+                                  webhookUrl,
+                                  collection,
+                              }) {
     const source = 'sitemapScraper';
-
-    const options = {
-        sitemapSource: 'https://rhcomercial.com.ar/sitemap.xml',
-        limitProducts: 2,
-        pageDelay: pageDelay,
-        collection: collection,
-    };
-    try {
-        processed = await runSitemapScraper(options);
-    } catch (error) {
-        status = 'error';
-        console.error('[scraperService] Error en sitemapScraper:', error);
-    } finally {
-        await notifyWebhook({ webhookUrl, source, status, processed });
-    }
-}
-
-async function categoryScraper({
-        categoryId,
-        pageDelay,
-        categoryDelay,
-        webhookUrl,
-        collection
-    }) {
-    let processed = 0;
     let status = 'success';
-    const source = 'categoryScraper';
+    let result = { total: 0, errors: 0, uploaded: 0, processed: 0 };
+
     try {
-        processed = await runCategoryScraper({
-            categoryDelay,
-            categoryId,
+        result = await runSitemapScraper({
+            sitemapSource,
+            limitProducts,
+            pageDelay,
             collection,
-            pageDelay
         });
     } catch (error) {
         status = 'error';
-        console.error('[scraperService] Error en categoryScraper:', error);
+        console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
-        await notifyWebhook({ webhookUrl, source, status, processed });
+        await notifyWebhook({
+            webhookUrl,
+            source,
+            status,
+            processed: result.processed,
+            total: result.total,
+            errors: result.errors,
+            uploaded: result.uploaded,
+        });
     }
+
+    return result;
+}
+
+/**
+ * Ejecuta el scraper basado en categorías.
+ */
+async function categoryScraper({
+                                   categoryIds,
+                                   pageDelay,
+                                   categoryDelay,
+                                   webhookUrl,
+                                   collection,
+                               }) {
+    const source = 'categoryScraper';
+    let status = 'success';
+    let result = { total: 0, errors: 0, uploaded: 0, processed: 0 };
+
+    try {
+        result = await runCategoryScraper({
+            categoryIds,
+            pageDelay,
+            categoryDelay,
+            collection,
+        });
+    } catch (error) {
+        status = 'error';
+        console.error(`[scraperService] Error en ${source}:`, error);
+    } finally {
+        await notifyWebhook({
+            webhookUrl,
+            source,
+            status,
+            processed: result.processed,
+            total: result.total,
+            errors: result.errors,
+            uploaded: result.uploaded,
+        });
+    }
+
+    return result;
 }
 
 module.exports = {
