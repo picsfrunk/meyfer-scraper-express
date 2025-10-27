@@ -36,7 +36,8 @@ const {
  *       await runCategoryScraper({
  *           collection,
  *           categoryIds: 'all',  // o un ID específico
- *           enableLogs: true
+ *           enableLogs: true,
+ *           useAutoDiscovery: true  // usa auto-discovery de páginas
  *       });
  *
  *    B) Sitemap Scraper - Scrapea todos los productos del sitemap:
@@ -101,7 +102,20 @@ async function discoverCategories({ enableLogs = true } = {}) {
 
         log(`\n✅ Auto-discovery completado: ${categoriesWithPages.length} categorías`, enableLogs);
 
-        // 3. Guardar en colección para uso futuro
+        // 3. Actualizar el documento del sitemap con las páginas descubiertas
+        await sitemapCollection.updateOne(
+            { source: sitemapDoc.source },
+            {
+                $set: {
+                    categories: categoriesWithPages,
+                    'summary.lastPageDiscovery': new Date()
+                }
+            }
+        );
+
+        log(`💾 Páginas guardadas en colección sitemap`, enableLogs);
+
+        // 4. También guardar en config para acceso rápido (backward compatibility)
         const configCollection = await getConfigCollection();
         await configCollection.updateOne(
             { key: 'discoveredCategories' },
@@ -223,13 +237,28 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
  * @returns {Promise<Array>} Array de categorías
  */
 async function getDiscoveredCategories({ forceRefresh = false, enableLogs = true } = {}) {
-    const configCollection = await getConfigCollection();
+    const sitemapCollection = await getSitemapCollection();
 
     if (!forceRefresh) {
+        // Primero intentar obtener del sitemap (fuente primaria)
+        const sitemapDoc = await sitemapCollection.findOne({});
+
+        if (sitemapDoc && sitemapDoc.categories && sitemapDoc.categories.length > 0) {
+            // Verificar si las categorías tienen información de páginas
+            const hasPageInfo = sitemapDoc.categories.some(cat => cat.pages !== undefined);
+
+            if (hasPageInfo) {
+                log(`📂 Usando categorías del sitemap (${sitemapDoc.categories.length} categorías)`, enableLogs);
+                return sitemapDoc.categories;
+            }
+        }
+
+        // Fallback: intentar obtener de config
+        const configCollection = await getConfigCollection();
         const cachedCategories = await configCollection.findOne({ key: 'discoveredCategories' });
 
         if (cachedCategories && cachedCategories.value) {
-            log(`📂 Usando categorías cacheadas (${cachedCategories.value.length} categorías)`, enableLogs);
+            log(`📂 Usando categorías cacheadas de config (${cachedCategories.value.length} categorías)`, enableLogs);
             return cachedCategories.value;
         }
     }
@@ -364,7 +393,8 @@ async function analyzeSitemap() {
             id,
             name: name.split('-').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('/'),
             slug: name,
-            products: productsByCategory[name] || 0
+            products: productsByCategory[name] || 0,
+            // pages será agregado por discoverCategories si se ejecuta
         }));
 
         const brandsArray = sortedBrands.map(([name, id]) => ({
@@ -413,7 +443,7 @@ async function analyzeSitemap() {
 // ============================================================
 
 class CategoryProductStrategy {
-    constructor({ categoryIds = 'all', useAutoDiscovery = false, enableLogs = true } = {}) {
+    constructor({ categoryIds = 'all', useAutoDiscovery = true, enableLogs = true } = {}) {
         this.categoryIds = categoryIds;
         this.useAutoDiscovery = useAutoDiscovery;
         this.enableLogs = enableLogs;
@@ -715,8 +745,8 @@ module.exports = {
     // Análisis
     analyzeSitemap,
     discoverCategories,
-
     getDiscoveredCategories,
+
     // Scrapers
     runCategoryScraper,
     runSitemapScraper,
