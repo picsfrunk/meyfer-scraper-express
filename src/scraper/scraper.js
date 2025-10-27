@@ -51,6 +51,173 @@ const {
  */
 
 // ============================================================
+// AUTO-DISCOVERY DE CATEGORÍAS
+// ============================================================
+
+/**
+ * Auto-descubre categorías y sus páginas scrapeando el sitemap y las páginas de categorías.
+ * Esto reemplaza la necesidad de tener RUBROS hardcodeado.
+ *
+ * @returns {Promise<Array>} Array de categorías con { id, name, slug, pages }
+ */
+async function discoverCategories({ enableLogs = true } = {}) {
+    try {
+        // 1. Obtener categorías del sitemap (si existe)
+        const sitemapCollection = await getSitemapCollection();
+        let sitemapDoc = await sitemapCollection.findOne({});
+
+        // Si no existe, analizar sitemap primero
+        if (!sitemapDoc) {
+            log('⚠️ No se encontró sitemap. Analizando...', enableLogs);
+            await analyzeSitemap();
+            sitemapDoc = await sitemapCollection.findOne({});
+        }
+
+        if (!sitemapDoc || !sitemapDoc.categories) {
+            throw new Error('No se pudieron obtener categorías del sitemap');
+        }
+
+        const categories = sitemapDoc.categories;
+        log(`📂 Categorías encontradas en sitemap: ${categories.length}`, enableLogs);
+
+        // 2. Para cada categoría, descubrir cantidad de páginas
+        const categoriesWithPages = [];
+
+        for (const cat of categories) {
+            log(`   🔍 Detectando páginas para: ${cat.name} (ID: ${cat.id})`, enableLogs);
+
+            const pages = await detectCategoryPages(cat.id, cat.slug, enableLogs);
+
+            categoriesWithPages.push({
+                id: cat.id,
+                name: cat.name,
+                slug: cat.slug,
+                pages: pages,
+                products: cat.products || 0
+            });
+
+            log(`      ✅ ${cat.name}: ${pages} página(s)`, enableLogs);
+        }
+
+        log(`\n✅ Auto-discovery completado: ${categoriesWithPages.length} categorías`, enableLogs);
+
+        // 3. Guardar en colección para uso futuro
+        const configCollection = await getConfigCollection();
+        await configCollection.updateOne(
+            { key: 'discoveredCategories' },
+            {
+                $set: {
+                    value: categoriesWithPages,
+                    updatedAt: new Date()
+                }
+            },
+            { upsert: true }
+        );
+
+        return categoriesWithPages;
+    } catch (error) {
+        log(`❌ Error en auto-discovery: ${error.message}`, enableLogs);
+        throw error;
+    }
+}
+
+/**
+ * Detecta cuántas páginas tiene una categoría específica.
+ * Estrategia: Binary search para encontrar la última página rápidamente.
+ *
+ * @param {number} categoryId - ID de la categoría
+ * @param {string} categorySlug - Slug de la categoría
+ * @param {boolean} enableLogs - Habilitar logs
+ * @returns {Promise<number>} Cantidad de páginas
+ */
+async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) {
+    try {
+        // 1. Verificar que existe al menos la página 1
+        const page1Url = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/1`;
+        const page1Response = await client.get(page1Url);
+        const $page1 = cheerio.load(page1Response.data);
+
+        const productsOnPage1 = $page1('form.oe_product_cart').length;
+        if (productsOnPage1 === 0) {
+            return 1; // Si no hay productos, solo hay 1 página (vacía)
+        }
+
+        // 2. Buscar paginación en el HTML
+        const pagination = $page1('.pagination li a');
+        let maxPageFromPagination = 1;
+
+        pagination.each((_, el) => {
+            const text = $page1(el).text().trim();
+            const pageNum = parseInt(text);
+            if (!isNaN(pageNum) && pageNum > maxPageFromPagination) {
+                maxPageFromPagination = pageNum;
+            }
+        });
+
+        // Si encontramos paginación, usar ese valor
+        if (maxPageFromPagination > 1) {
+            return maxPageFromPagination;
+        }
+
+        // 3. Si no hay paginación visible, hacer binary search
+        // (útil si la paginación está oculta o es dinámica)
+        let low = 1;
+        let high = 50; // Máximo razonable de páginas
+        let lastValidPage = 1;
+
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/${mid}`;
+
+            try {
+                const response = await client.get(testUrl);
+                const $ = cheerio.load(response.data);
+                const productsOnPage = $('form.oe_product_cart').length;
+
+                if (productsOnPage > 0) {
+                    lastValidPage = mid;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            } catch (error) {
+                // Si da error 404 o similar, no existe esa página
+                high = mid - 1;
+            }
+
+            await delay(100); // Pequeño delay para no sobrecargar
+        }
+
+        return lastValidPage;
+    } catch (error) {
+        log(`⚠️ Error detectando páginas para categoría ${categoryId}: ${error.message}`, enableLogs);
+        return 1; // Fallback: asumir 1 página
+    }
+}
+
+/**
+ * Obtiene las categorías auto-descubiertas (o las descubre si no existen).
+ *
+ * @param {boolean} forceRefresh - Forzar re-discovery incluso si existen
+ * @returns {Promise<Array>} Array de categorías
+ */
+async function getDiscoveredCategories({ forceRefresh = false, enableLogs = true } = {}) {
+    const configCollection = await getConfigCollection();
+
+    if (!forceRefresh) {
+        const cachedCategories = await configCollection.findOne({ key: 'discoveredCategories' });
+
+        if (cachedCategories && cachedCategories.value) {
+            log(`📂 Usando categorías cacheadas (${cachedCategories.value.length} categorías)`, enableLogs);
+            return cachedCategories.value;
+        }
+    }
+
+    log('🔍 Ejecutando auto-discovery de categorías...', enableLogs);
+    return await discoverCategories({ enableLogs });
+}
+
+// ============================================================
 // UTILS
 // ============================================================
 
@@ -225,15 +392,29 @@ async function analyzeSitemap() {
 // ============================================================
 
 class CategoryProductStrategy {
-    constructor({ categoryIds = 'all', enableLogs = true } = {}) {
+    constructor({ categoryIds = 'all', useAutoDiscovery = false, enableLogs = true } = {}) {
         this.categoryIds = categoryIds;
+        this.useAutoDiscovery = useAutoDiscovery;
         this.enableLogs = enableLogs;
     }
 
     async getProductList() {
-        const rubros = this.categoryIds === 'all'
-            ? RUBROS
-            : RUBROS.filter(r => r.id === parseInt(this.categoryIds));
+        let rubros;
+
+        // Decidir si usar auto-discovery o RUBROS hardcodeado
+        if (this.useAutoDiscovery) {
+            log('🤖 Usando auto-discovery de categorías', this.enableLogs);
+            const discoveredCategories = await getDiscoveredCategories({ enableLogs: this.enableLogs });
+
+            rubros = this.categoryIds === 'all'
+                ? discoveredCategories
+                : discoveredCategories.filter(r => r.id === parseInt(this.categoryIds));
+        } else {
+            log('📋 Usando configuración manual de RUBROS', this.enableLogs);
+            rubros = this.categoryIds === 'all'
+                ? RUBROS
+                : RUBROS.filter(r => r.id === parseInt(this.categoryIds));
+        }
 
         if (!rubros.length) throw new Error('No se encontró ningún rubro válido.');
 
@@ -245,7 +426,7 @@ class CategoryProductStrategy {
             for (let page = 1; page <= rubro.pages; page++) {
                 log(`➡ Página ${page}/${rubro.pages}`, this.enableLogs);
 
-                const products = await this._fetchProducts(rubro.id, page);
+                const products = await this._fetchProducts(rubro.id, page, rubro.slug);
                 for (const p of products) {
                     productList.push({
                         ...p,
@@ -260,8 +441,14 @@ class CategoryProductStrategy {
         return productList;
     }
 
-    async _fetchProducts(categoryId, page) {
-        const url = `${BASE_URL}/shop/category/por-rubro-xxx-${categoryId}/page/${page}`;
+    async _fetchProducts(categoryId, page, slug = null) {
+        // Construir URL usando slug si está disponible, sino usar el formato antiguo
+        const urlPart = slug
+            ? `por-rubro-${slug}-${categoryId}`
+            : `por-rubro-xxx-${categoryId}`;
+
+        const url = `${BASE_URL}/shop/category/${urlPart}/page/${page}`;
+
         try {
             const res = await client.get(url);
             const $ = cheerio.load(res.data);
@@ -276,7 +463,8 @@ class CategoryProductStrategy {
     }
 
     getName() {
-        return `Category Scraper (${this.categoryIds === 'all' ? 'Todas' : `ID ${this.categoryIds}`})`;
+        const mode = this.useAutoDiscovery ? 'Auto-discovery' : 'Manual';
+        return `Category Scraper [${mode}] (${this.categoryIds === 'all' ? 'Todas' : `ID ${this.categoryIds}`})`;
     }
 }
 
@@ -503,9 +691,16 @@ async function runSitemapScraper(options) {
 }
 
 module.exports = {
+    // Análisis
+    analyzeSitemap,
+    discoverCategories,
+    getDiscoveredCategories,
+
+    // Scrapers
     runCategoryScraper,
     runSitemapScraper,
-    analyzeSitemap,
+
+    // Clases (por si se necesitan para extensión)
     CategoryProductStrategy,
     SitemapProductStrategy,
     ScraperRunner,

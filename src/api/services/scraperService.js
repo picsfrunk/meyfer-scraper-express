@@ -114,6 +114,7 @@ async function categoryScraper({
             pageDelay,
             categoryDelay,
             collection,
+            useAutoDiscovery: false,
         });
     } catch (error) {
         status = 'error';
