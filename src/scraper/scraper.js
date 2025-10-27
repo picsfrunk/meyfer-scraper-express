@@ -136,64 +136,83 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
         const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/999`;
 
         const response = await client.get(testUrl);
+        const finalUrl = response.request?.res?.responseUrl || testUrl;
         const $ = cheerio.load(response.data);
+
+        // DEBUG: Log de URL final
+        log(`   🔍 DEBUG - URL solicitada: /page/999`, enableLogs);
+        log(`   🔍 DEBUG - URL final: ${finalUrl}`, enableLogs);
 
         // Verificar que hay productos (no es una categoría vacía)
         const productsOnPage = $('form.oe_product_cart').length;
+        log(`   🔍 DEBUG - Productos en página: ${productsOnPage}`, enableLogs);
+
         if (productsOnPage === 0) {
-            return 1; // Categoría vacía o con solo 1 página sin productos
+            return 1; // Categoría vacía
         }
 
-        // Estrategia 1: Buscar la página activa en la paginación
-        const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
-        const activePageNum = parseInt(activePage);
-
-        if (!isNaN(activePageNum) && activePageNum > 0) {
-            return activePageNum;
-        }
-
-        // Estrategia 2: Si no hay paginación visible, verificar si existe botón "Siguiente"
+        // Verificar si existe paginación
         const paginationExists = $('.pagination').length > 0;
+        log(`   🔍 DEBUG - ¿Existe paginación?: ${paginationExists}`, enableLogs);
 
         if (!paginationExists) {
-            // No hay paginación = solo 1 página
+            log(`   🔍 DEBUG - No hay paginación → Retornando 1`, enableLogs);
             return 1;
         }
 
-        // Estrategia 3: Si hay paginación pero no página activa, buscar el número más alto
-        let maxPage = 0;
+        // Estrategia 1: Buscar la página activa
+        const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
+        log(`   🔍 DEBUG - Página activa (texto): "${activePage}"`, enableLogs);
+
+        const activePageNum = parseInt(activePage);
+        if (!isNaN(activePageNum) && activePageNum > 0) {
+            log(`   🔍 DEBUG - Página activa válida → Retornando ${activePageNum}`, enableLogs);
+            return activePageNum;
+        }
+
+        // Estrategia 2: Extraer de hrefs
+        const pageNumbers = [];
         $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
             const href = $(el).attr('href');
+            const text = $(el).text().trim();
+            log(`   🔍 DEBUG - Link encontrado: href="${href}", text="${text}"`, enableLogs);
+
             if (href) {
-                // Extraer número de página de la URL: /page/22
                 const match = href.match(/\/page\/(\d+)/);
                 if (match) {
                     const pageNum = parseInt(match[1]);
-                    if (!isNaN(pageNum) && pageNum > maxPage) {
-                        maxPage = pageNum;
+                    if (!isNaN(pageNum)) {
+                        pageNumbers.push(pageNum);
                     }
                 }
             }
         });
 
-        if (maxPage > 0) {
+        log(`   🔍 DEBUG - Números de página extraídos: [${pageNumbers.join(', ')}]`, enableLogs);
+
+        if (pageNumbers.length > 0) {
+            const maxPage = Math.max(...pageNumbers);
+            log(`   🔍 DEBUG - Máxima página encontrada → Retornando ${maxPage}`, enableLogs);
             return maxPage;
         }
 
-        // Estrategia 4: Verificar si el botón "Siguiente" está deshabilitado
+        // Estrategia 3: Verificar estado de botones
         const nextButtonDisabled = $('.pagination li.page-item.disabled .fa-chevron-right').length > 0;
-        const prevButtonExists = $('.pagination li.page-item .fa-chevron-left').length > 0;
+        const prevButtonExists = $('.pagination li.page-item:not(.disabled) .fa-chevron-left').length > 0;
 
-        // Si hay botón anterior pero el siguiente está deshabilitado, y no encontramos número
-        // probablemente sea página 1
+        log(`   🔍 DEBUG - Botón siguiente deshabilitado: ${nextButtonDisabled}`, enableLogs);
+        log(`   🔍 DEBUG - Botón anterior existe: ${prevButtonExists}`, enableLogs);
+
         if (nextButtonDisabled && !prevButtonExists) {
+            log(`   🔍 DEBUG - Solo hay 1 página → Retornando 1`, enableLogs);
             return 1;
         }
 
-        return 1; // Fallback final
+        log(`   🔍 DEBUG - No se pudo determinar, fallback → Retornando 1`, enableLogs);
+        return 1;
     } catch (error) {
         log(`⚠️ Error detectando páginas para categoría ${categoryId}: ${error.message}`, enableLogs);
-        return 1; // Fallback: asumir 1 página
+        return 1;
     }
 }
 
@@ -696,8 +715,8 @@ module.exports = {
     // Análisis
     analyzeSitemap,
     discoverCategories,
-    getDiscoveredCategories,
 
+    getDiscoveredCategories,
     // Scrapers
     runCategoryScraper,
     runSitemapScraper,
