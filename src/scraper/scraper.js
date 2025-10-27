@@ -123,7 +123,7 @@ async function discoverCategories({ enableLogs = true } = {}) {
 
 /**
  * Detecta cuántas páginas tiene una categoría específica.
- * Estrategia: Binary search para encontrar la última página rápidamente.
+ * Estrategia optimizada: Ir a página 999, Odoo redirige a la última página automáticamente.
  *
  * @param {number} categoryId - ID de la categoría
  * @param {string} categorySlug - Slug de la categoría
@@ -132,63 +132,65 @@ async function discoverCategories({ enableLogs = true } = {}) {
  */
 async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) {
     try {
-        // 1. Verificar que existe al menos la página 1
-        const page1Url = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/1`;
-        const page1Response = await client.get(page1Url);
-        const $page1 = cheerio.load(page1Response.data);
+        // Estrategia: Pedir página 999, Odoo nos lleva a la última automáticamente
+        const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/999`;
 
-        const productsOnPage1 = $page1('form.oe_product_cart').length;
-        if (productsOnPage1 === 0) {
-            return 1; // Si no hay productos, solo hay 1 página (vacía)
+        const response = await client.get(testUrl);
+        const $ = cheerio.load(response.data);
+
+        // Verificar que hay productos (no es una categoría vacía)
+        const productsOnPage = $('form.oe_product_cart').length;
+        if (productsOnPage === 0) {
+            return 1; // Categoría vacía o con solo 1 página sin productos
         }
 
-        // 2. Buscar paginación en el HTML
-        const pagination = $page1('.pagination li a');
-        let maxPageFromPagination = 1;
+        // Estrategia 1: Buscar la página activa en la paginación
+        const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
+        const activePageNum = parseInt(activePage);
 
-        pagination.each((_, el) => {
-            const text = $page1(el).text().trim();
-            const pageNum = parseInt(text);
-            if (!isNaN(pageNum) && pageNum > maxPageFromPagination) {
-                maxPageFromPagination = pageNum;
+        if (!isNaN(activePageNum) && activePageNum > 0) {
+            return activePageNum;
+        }
+
+        // Estrategia 2: Si no hay paginación visible, verificar si existe botón "Siguiente"
+        const paginationExists = $('.pagination').length > 0;
+
+        if (!paginationExists) {
+            // No hay paginación = solo 1 página
+            return 1;
+        }
+
+        // Estrategia 3: Si hay paginación pero no página activa, buscar el número más alto
+        let maxPage = 0;
+        $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
+            const href = $(el).attr('href');
+            if (href) {
+                // Extraer número de página de la URL: /page/22
+                const match = href.match(/\/page\/(\d+)/);
+                if (match) {
+                    const pageNum = parseInt(match[1]);
+                    if (!isNaN(pageNum) && pageNum > maxPage) {
+                        maxPage = pageNum;
+                    }
+                }
             }
         });
 
-        // Si encontramos paginación, usar ese valor
-        if (maxPageFromPagination > 1) {
-            return maxPageFromPagination;
+        if (maxPage > 0) {
+            return maxPage;
         }
 
-        // 3. Si no hay paginación visible, hacer binary search
-        // (útil si la paginación está oculta o es dinámica)
-        let low = 1;
-        let high = 50; // Máximo razonable de páginas
-        let lastValidPage = 1;
+        // Estrategia 4: Verificar si el botón "Siguiente" está deshabilitado
+        const nextButtonDisabled = $('.pagination li.page-item.disabled .fa-chevron-right').length > 0;
+        const prevButtonExists = $('.pagination li.page-item .fa-chevron-left').length > 0;
 
-        while (low <= high) {
-            const mid = Math.floor((low + high) / 2);
-            const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/${mid}`;
-
-            try {
-                const response = await client.get(testUrl);
-                const $ = cheerio.load(response.data);
-                const productsOnPage = $('form.oe_product_cart').length;
-
-                if (productsOnPage > 0) {
-                    lastValidPage = mid;
-                    low = mid + 1;
-                } else {
-                    high = mid - 1;
-                }
-            } catch (error) {
-                // Si da error 404 o similar, no existe esa página
-                high = mid - 1;
-            }
-
-            await delay(100); // Pequeño delay para no sobrecargar
+        // Si hay botón anterior pero el siguiente está deshabilitado, y no encontramos número
+        // probablemente sea página 1
+        if (nextButtonDisabled && !prevButtonExists) {
+            return 1;
         }
 
-        return lastValidPage;
+        return 1; // Fallback final
     } catch (error) {
         log(`⚠️ Error detectando páginas para categoría ${categoryId}: ${error.message}`, enableLogs);
         return 1; // Fallback: asumir 1 página
