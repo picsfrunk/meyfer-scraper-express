@@ -1,3 +1,4 @@
+//scraperUtils.js
 require('dotenv').config();
 const config = require('../config/config');
 const axios = require('axios');
@@ -35,8 +36,6 @@ async function loginToOdoo() {
         });
 
         if (res.data.result?.uid) {
-            console.log('✔ Login exitoso como:', ODOO_USER);
-            logToFile(`✔ Login exitoso como: ${ODOO_USER}`);
             return true;
         } else {
             logToFile('❌ Falló el login.');
@@ -93,7 +92,6 @@ async function extractProductIdsFromHtml(productUrl) {
             };
         }
 
-        logToFile(`⚠️ No se encontraron IDs en el HTML de: ${productUrl}`);
         return null;
     } catch (error) {
         logToFile(`❌ Error extrayendo IDs del HTML de ${productUrl}: ${error.message}`);

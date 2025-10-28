@@ -27,4 +27,15 @@ async function getSitemapCollection() {
     return database.collection(process.env.SITEMAP_COLLECTION || 'sitemap_analysis');
 }
 
-module.exports = { getDB, getConfigCollection, getScrapedCollection, getSitemapCollection };
+async function getLogsCollection() {
+    const database = await getDB();
+    return database.collection('application_logs');
+}
+
+module.exports = {
+    getDB,
+    getConfigCollection,
+    getScrapedCollection,
+    getSitemapCollection,
+    getLogsCollection
+};

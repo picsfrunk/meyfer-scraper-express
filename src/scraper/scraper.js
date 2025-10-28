@@ -69,7 +69,6 @@ async function discoverCategories({ enableLogs = true } = {}) {
 
         // Si no existe, analizar sitemap primero
         if (!sitemapDoc) {
-            log('⚠️ No se encontró sitemap. Analizando...', enableLogs);
             await analyzeSitemap();
             sitemapDoc = await sitemapCollection.findOne({});
         }
@@ -79,14 +78,11 @@ async function discoverCategories({ enableLogs = true } = {}) {
         }
 
         const categories = sitemapDoc.categories;
-        log(`📂 Categorías encontradas en sitemap: ${categories.length}`, enableLogs);
 
         // 2. Para cada categoría, descubrir cantidad de páginas
         const categoriesWithPages = [];
 
         for (const cat of categories) {
-            log(`   🔍 Detectando páginas para: ${cat.name} (ID: ${cat.id})`, enableLogs);
-
             const pages = await detectCategoryPages(cat.id, cat.slug, enableLogs);
 
             categoriesWithPages.push({
@@ -96,11 +92,7 @@ async function discoverCategories({ enableLogs = true } = {}) {
                 pages: pages,
                 products: cat.products || 0
             });
-
-            log(`      ✅ ${cat.name}: ${pages} página(s)`, enableLogs);
         }
-
-        log(`\n✅ Auto-discovery completado: ${categoriesWithPages.length} categorías`, enableLogs);
 
         // 3. Actualizar el documento del sitemap con las páginas descubiertas
         await sitemapCollection.updateOne(
@@ -112,8 +104,6 @@ async function discoverCategories({ enableLogs = true } = {}) {
                 }
             }
         );
-
-        log(`💾 Páginas guardadas en colección sitemap`, enableLogs);
 
         // 4. También guardar en config para acceso rápido (backward compatibility)
         const configCollection = await getConfigCollection();
@@ -153,13 +143,8 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
         const finalUrl = response.request?.res?.responseUrl || testUrl;
         const $ = cheerio.load(response.data);
 
-        // DEBUG: Log de URL final
-        log(`   🔍 DEBUG - URL solicitada: /page/999`, enableLogs);
-        log(`   🔍 DEBUG - URL final: ${finalUrl}`, enableLogs);
-
         // Verificar que hay productos (no es una categoría vacía)
         const productsOnPage = $('form.oe_product_cart').length;
-        log(`   🔍 DEBUG - Productos en página: ${productsOnPage}`, enableLogs);
 
         if (productsOnPage === 0) {
             return 1; // Categoría vacía
@@ -167,20 +152,15 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
 
         // Verificar si existe paginación
         const paginationExists = $('.pagination').length > 0;
-        log(`   🔍 DEBUG - ¿Existe paginación?: ${paginationExists}`, enableLogs);
 
         if (!paginationExists) {
-            log(`   🔍 DEBUG - No hay paginación → Retornando 1`, enableLogs);
             return 1;
         }
 
         // Estrategia 1: Buscar la página activa
         const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
-        log(`   🔍 DEBUG - Página activa (texto): "${activePage}"`, enableLogs);
-
         const activePageNum = parseInt(activePage);
         if (!isNaN(activePageNum) && activePageNum > 0) {
-            log(`   🔍 DEBUG - Página activa válida → Retornando ${activePageNum}`, enableLogs);
             return activePageNum;
         }
 
@@ -189,7 +169,6 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
         $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
             const href = $(el).attr('href');
             const text = $(el).text().trim();
-            log(`   🔍 DEBUG - Link encontrado: href="${href}", text="${text}"`, enableLogs);
 
             if (href) {
                 const match = href.match(/\/page\/(\d+)/);
@@ -202,11 +181,8 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
             }
         });
 
-        log(`   🔍 DEBUG - Números de página extraídos: [${pageNumbers.join(', ')}]`, enableLogs);
-
         if (pageNumbers.length > 0) {
             const maxPage = Math.max(...pageNumbers);
-            log(`   🔍 DEBUG - Máxima página encontrada → Retornando ${maxPage}`, enableLogs);
             return maxPage;
         }
 
@@ -214,15 +190,10 @@ async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) 
         const nextButtonDisabled = $('.pagination li.page-item.disabled .fa-chevron-right').length > 0;
         const prevButtonExists = $('.pagination li.page-item:not(.disabled) .fa-chevron-left').length > 0;
 
-        log(`   🔍 DEBUG - Botón siguiente deshabilitado: ${nextButtonDisabled}`, enableLogs);
-        log(`   🔍 DEBUG - Botón anterior existe: ${prevButtonExists}`, enableLogs);
-
         if (nextButtonDisabled && !prevButtonExists) {
-            log(`   🔍 DEBUG - Solo hay 1 página → Retornando 1`, enableLogs);
             return 1;
         }
 
-        log(`   🔍 DEBUG - No se pudo determinar, fallback → Retornando 1`, enableLogs);
         return 1;
     } catch (error) {
         log(`⚠️ Error detectando páginas para categoría ${categoryId}: ${error.message}`, enableLogs);
@@ -248,7 +219,6 @@ async function getDiscoveredCategories({ forceRefresh = false, enableLogs = true
             const hasPageInfo = sitemapDoc.categories.some(cat => cat.pages !== undefined);
 
             if (hasPageInfo) {
-                log(`📂 Usando categorías del sitemap (${sitemapDoc.categories.length} categorías)`, enableLogs);
                 return sitemapDoc.categories;
             }
         }
@@ -258,12 +228,10 @@ async function getDiscoveredCategories({ forceRefresh = false, enableLogs = true
         const cachedCategories = await configCollection.findOne({ key: 'discoveredCategories' });
 
         if (cachedCategories && cachedCategories.value) {
-            log(`📂 Usando categorías cacheadas de config (${cachedCategories.value.length} categorías)`, enableLogs);
             return cachedCategories.value;
         }
     }
 
-    log('🔍 Ejecutando auto-discovery de categorías...', enableLogs);
     return await discoverCategories({ enableLogs });
 }
 
@@ -275,7 +243,7 @@ const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 function log(message, enableLogs = true) {
     if (enableLogs) {
-        console.log(message);
+        // console.log(message);
         logToFile(message);
     }
 }
@@ -309,8 +277,6 @@ async function analyzeSitemap() {
     }
 
     try {
-        log(`📥 Descargando sitemap desde: ${sitemapUrl}`);
-
         let content = await fetchSitemap(sitemapUrl);
         content = content.replace('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"', '');
 
@@ -328,8 +294,6 @@ async function analyzeSitemap() {
         const productPattern = /\/shop\/[A-Za-z0-9\-]+/i;
         const brandPattern = /\/shop\/category\/por-marca-?([A-Za-z0-9\-]*)/i;
         const categoryPattern = /\/shop\/category\/por-rubro-([A-Za-z0-9\-]+)/i;
-
-        log(`📊 Procesando ${urls.length} URLs...`);
 
         for (const url of urls) {
             if (
@@ -426,11 +390,6 @@ async function analyzeSitemap() {
             { upsert: true }
         );
 
-        log(`✅ Sitemap guardado en colección: ${process.env.SITEMAP_COLLECTION || 'sitemap_analysis'}`);
-        log(`   📦 Productos: ${products.length}`);
-        log(`   🏷️  Marcas: ${Object.keys(brandsData).length}`);
-        log(`   🧰 Categorías: ${Object.keys(categoriesData).length}`);
-
         return catalogDocument;
     } catch (error) {
         log(`❌ Error analizando sitemap: ${error.message}`, true);
@@ -452,16 +411,13 @@ class CategoryProductStrategy {
     async getProductList() {
         let rubros;
 
-        // Decidir si usar auto-discovery o RUBROS hardcodeado
         if (this.useAutoDiscovery) {
-            log('🤖 Usando auto-discovery de categorías', this.enableLogs);
             const discoveredCategories = await getDiscoveredCategories({ enableLogs: this.enableLogs });
 
             rubros = this.categoryIds === 'all'
                 ? discoveredCategories
                 : discoveredCategories.filter(r => r.id === parseInt(this.categoryIds));
         } else {
-            log('📋 Usando configuración manual de RUBROS', this.enableLogs);
             rubros = this.categoryIds === 'all'
                 ? RUBROS
                 : RUBROS.filter(r => r.id === parseInt(this.categoryIds));
@@ -472,10 +428,7 @@ class CategoryProductStrategy {
         const productList = [];
 
         for (const rubro of rubros) {
-            log(`📦 Rubro: ${rubro.name} (${rubro.id})`, this.enableLogs);
-
             for (let page = 1; page <= rubro.pages; page++) {
-                log(`➡ Página ${page}/${rubro.pages}`, this.enableLogs);
 
                 const products = await this._fetchProducts(rubro.id, page, rubro.slug);
                 for (const p of products) {
@@ -488,7 +441,6 @@ class CategoryProductStrategy {
             }
         }
 
-        log(`📋 Total productos encontrados: ${productList.length}`, this.enableLogs);
         return productList;
     }
 
@@ -534,13 +486,8 @@ class SitemapProductStrategy {
 
         // Si no existe el documento, analizar sitemap automáticamente
         if (!sitemapDoc) {
-            log('⚠️ No se encontró documento de sitemap en DB. Ejecutando análisis automático...', this.enableLogs);
-
             try {
                 await analyzeSitemap();
-                log('✅ Análisis de sitemap completado', this.enableLogs);
-
-                // Intentar obtener el documento nuevamente
                 sitemapDoc = await sitemapCollection.findOne(query);
 
                 if (!sitemapDoc) {
@@ -607,11 +554,6 @@ class SitemapProductStrategy {
             };
         }).filter(p => p.product_template_id);
 
-        log(`📋 Productos en sitemap: ${productList.length}`, this.enableLogs);
-
-        const withCategory = productList.filter(p => p.categoryId).length;
-        log(`📂 Productos con categoría detectada: ${withCategory}/${productList.length}`, this.enableLogs);
-
         return productList;
     }
 
@@ -639,7 +581,6 @@ class ScraperRunner {
         const configCollection = await getConfigCollection();
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
         this.profitMargin = profitDoc ? profitDoc.value / 100 : 1;
-        log(`🚀 Iniciando: ${this.strategy.getName()}`, this.enableLogs);
     }
 
     async run() {
@@ -649,8 +590,6 @@ class ScraperRunner {
 
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
-            const progress = `[${i + 1}/${products.length}]`;
-            log(`${progress} Procesando template ID: ${product.product_template_id}`, this.enableLogs);
 
             const details = await this._fetchAndProcessProduct(product);
             if (details) {
@@ -661,24 +600,13 @@ class ScraperRunner {
                 );
                 total++;
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
-                log(`✔ ${progress} Guardado: ${details.product_id} - ${details.display_name}`, this.enableLogs);
             } else {
                 errors++;
-                log(`✘ ${progress} Error procesando producto`, this.enableLogs);
             }
 
             await delay(this.pageDelay);
         }
 
-        const summary = `
-✅ Finalizado: ${this.strategy.getName()}
-   Total: ${total}
-   Errores: ${errors}
-   Cloudinary: ${uploaded}
-   Éxito: ${((total / products.length) * 100).toFixed(2)}%
-    `;
-
-        log(summary, this.enableLogs);
         return { total, errors, uploaded, processed: products.length };
     }
 
