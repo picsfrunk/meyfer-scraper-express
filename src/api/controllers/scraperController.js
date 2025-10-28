@@ -1,4 +1,5 @@
 const ScraperService = require('../services/scraperService');
+const logToFile = require('../../utils/logToFile');
 
 const sitemapScraperController = async (req, res) => {
     try {
@@ -13,6 +14,15 @@ const sitemapScraperController = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
 
+        // Log del inicio del proceso
+        logToFile.info('Iniciando sitemap scraper', 'controller', {
+            sitemapSource,
+            limitProducts,
+            pageDelay,
+            webhookUrl: !!webhookUrl,
+            collection: collection.collectionName
+        });
+
         const result = await ScraperService.sitemapScraper({
             sitemapSource,
             limitProducts,
@@ -21,14 +31,28 @@ const sitemapScraperController = async (req, res) => {
             collection,
         });
 
-        console.log(`[controller] Sitemap scraper finished:`, result);
+        // Log del resultado exitoso
+        logToFile.info('Sitemap scraper finalizado exitosamente', 'controller', {
+            total: result.total,
+            errors: result.errors,
+            uploaded: result.uploaded,
+            processed: result.processed,
+            successRate: ((result.total / result.processed) * 100).toFixed(2) + '%'
+        });
 
     } catch (error) {
-        console.error('[controller] Error en sitemapScraperController:', error);
-        res.status(500).json({ status: 'error', message: error.message });
+        // Log del error
+        logToFile.error('Error en sitemapScraperController', 'controller', {
+            error: error.message,
+            stack: error.stack,
+            body: req.body
+        });
+
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
     }
 };
-
 
 const categoryScraperController = async (req, res) => {
     try {
@@ -43,6 +67,15 @@ const categoryScraperController = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Category scraper started' });
 
+        // Log del inicio del proceso
+        logToFile.info('Iniciando category scraper', 'controller', {
+            categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
+            pageDelay,
+            categoryDelay,
+            webhookUrl: !!webhookUrl,
+            collection: collection.collectionName
+        });
+
         const result = await ScraperService.categoryScraper({
             categoryIds,
             pageDelay,
@@ -51,11 +84,26 @@ const categoryScraperController = async (req, res) => {
             collection,
         });
 
-        console.log(`[controller] Category scraper finished:`, result);
+        // Log del resultado exitoso
+        logToFile.info('Category scraper finalizado exitosamente', 'controller', {
+            total: result.total,
+            errors: result.errors,
+            uploaded: result.uploaded,
+            processed: result.processed,
+            successRate: ((result.total / result.processed) * 100).toFixed(2) + '%'
+        });
 
     } catch (error) {
-        console.error('[controller] Error en categoryScraperController:', error);
-        res.status(500).json({ status: 'error', message: error.message });
+        // Log del error
+        logToFile.error('Error en categoryScraperController', 'controller', {
+            error: error.message,
+            stack: error.stack,
+            body: req.body
+        });
+
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
     }
 };
 
@@ -69,18 +117,33 @@ const analyzeSitemapController = async (req, res) => {
 
         res.status(202).json({ status: 'accepted', message: 'Sitemap analysis started' });
 
+        // Log del inicio del proceso
+        logToFile.info('Iniciando análisis de sitemap', 'controller', {
+            webhookUrl: !!webhookUrl
+        });
+
         const result = await ScraperService.analyzeSitemapService({ webhookUrl });
 
-        console.log(`[controller] Sitemap analysis finished:`, result);
+        // Log del resultado exitoso
+        logToFile.info('Análisis de sitemap finalizado exitosamente', 'controller', {
+            totalProducts: result.summary?.totalProducts,
+            totalBrands: result.summary?.totalBrands,
+            totalCategories: result.summary?.totalCategories
+        });
 
     } catch (error) {
-        console.error('[controller] Error en analyzeSitemapController:', error);
+        // Log del error
+        logToFile.error('Error en analyzeSitemapController', 'controller', {
+            error: error.message,
+            stack: error.stack,
+            body: req.body
+        });
+
         if (!res.headersSent) {
             res.status(500).json({ status: 'error', message: error.message });
         }
     }
 };
-
 
 module.exports = {
     categoryScraperController,
