@@ -11,7 +11,7 @@ cloudinary.config({
 
 // Verificar configuración al cargar el módulo
 if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-    logToFile.error('Cloudinary no está completamente configurado en .env', 'imageUploader');
+    console.error('Cloudinary no está completamente configurado en .env', 'imageUploader');
 }
 
 /**
@@ -40,7 +40,7 @@ async function imageExistsInCloudinary(publicId) {
             return false;
         }
         // Cualquier otro error, asumir que no existe para reintentar
-        logToFile.error(`Error verificando existencia de imagen: ${error.message}`, 'imageUploader');
+        console.error(`Error verificando existencia de imagen: ${error.message}`, 'imageUploader');
         return false;
     }
 }
@@ -128,14 +128,14 @@ async function uploadImageToCloudinary(imageUrl, options = {}) {
         return result.secure_url;
 
     } catch (error) {
-        logToFile.error(`Error subiendo imagen a Cloudinary: ${error.message}`, 'imageUploader', {
+        console.error(`Error subiendo imagen a Cloudinary: ${error.message}`, 'imageUploader', {
             imageUrl: imageUrl,
             statusCode: error.response?.status
         });
 
         // Si falla, intentar guardar la URL original como fallback
         if (error.response?.status === 404) {
-            logToFile.warn('Imagen no encontrada en origen, usando URL original', 'imageUploader');
+            console.warn('Imagen no encontrada en origen, usando URL original', 'imageUploader');
         }
 
         return null;
@@ -186,7 +186,7 @@ async function deleteImageFromCloudinary(publicId) {
         const result = await cloudinary.uploader.destroy(publicId);
         return result.result === 'ok';
     } catch (error) {
-        logToFile.error(`Error eliminando imagen de Cloudinary: ${error.message}`, 'imageUploader');
+        console.error(`Error eliminando imagen de Cloudinary: ${error.message}`, 'imageUploader');
         return false;
     }
 }
@@ -217,7 +217,7 @@ function extractPublicIdFromUrl(cloudinaryUrl) {
 
         return publicId;
     } catch (error) {
-        logToFile.error(`Error extrayendo public_id: ${error.message}`, 'imageUploader');
+        console.error(`Error extrayendo public_id: ${error.message}`, 'imageUploader');
         return null;
     }
 }
