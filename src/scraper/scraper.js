@@ -361,11 +361,16 @@ async function analyzeSitemap() {
             // pages será agregado por discoverCategories si se ejecuta
         }));
 
-        const brandsArray = sortedBrands.map(([name, id]) => ({
+        const brandsArray = sortedBrands.map(([slug, id]) => ({
             id,
-            name,
-            products: productsByBrand[name] || 0,
-            urls: brands.filter(url => url.includes(name))
+            slug,
+            // Convertir slug a nombre legible: "la-hacendosa" -> "La Hacendosa"
+            name: slug
+                .split('-')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(' '),
+            products: productsByBrand[slug] || 0,
+            urls: brands.filter(url => url.includes(slug))
         }));
 
         const catalogDocument = {
