@@ -522,8 +522,8 @@ class CategoryProductStrategy {
             return $('form.oe_product_cart').map((_, el) => {
                 const $form = $(el);
 
-                const productId = Number($form.find("input[name='product_id']").val());
-                const productTemplateId = Number($form.find("input[name='product_template_id']").val());
+                const productId = $form.find("input[name='product_id']").val();
+                const productTemplateId = $form.find("input[name='product_template_id']").val();
 
                 // Extraer el nombre del producto del HTML
                 let productName = null;
@@ -716,7 +716,7 @@ class ScraperRunner {
             let productId = product.product_id;
             if (!productId) {
                 const $ = cheerio.load(response.data);
-                productId = Number($("input[name='product_id']").val());
+                productId = $("input[name='product_id']").val();
                 if (!productId) return null;
             }
 

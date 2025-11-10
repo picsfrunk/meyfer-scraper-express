@@ -176,12 +176,12 @@ async function processProductData({
                                       profitMargin,
                                       collection,
                                       sourceUrl = null,
-                                      brand = null  // ← Recibir la marca como parámetro
+                                      brand = null
                                   }) {
     try {
         // Buscar si el producto ya existe en BD
         const existingProduct = await collection.findOne({
-            product_id: parseInt(customProductId)
+            product_id: customProductId  // ← Sin parseInt, mantener como string
         });
         const existingImageUrl = existingProduct?.image_url || null;
 
@@ -199,7 +199,7 @@ async function processProductData({
         const finalPrice = productApiData.list_price * (1 + profitMargin);
 
         const productData = {
-            product_id: parseInt(customProductId),
+            product_id: customProductId,
             display_name: productApiData.display_name,
             final_price: finalPrice,
             list_price: productApiData.list_price,
@@ -209,7 +209,7 @@ async function processProductData({
             product_type: productApiData.product_type,
             category_id: categoryId,
             category_name: categoryName,
-            brand: productBrand,  // ← Usar la marca procesada
+            brand: productBrand,
         };
 
         // Agregar source_url si está disponible (para sitemap scraper)
@@ -219,7 +219,7 @@ async function processProductData({
 
         return productData;
     } catch (error) {
-        logToFile(`❌ Error procesando datos del producto ${customProductId}: ${error.message}`);
+        await logToFile(`❌ Error procesando datos del producto ${customProductId}: ${error.message}`);
         return null;
     }
 }
