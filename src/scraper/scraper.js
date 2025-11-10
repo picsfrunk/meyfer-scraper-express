@@ -411,9 +411,67 @@ class CategoryProductStrategy {
         this.categoryIds = categoryIds;
         this.useAutoDiscovery = useAutoDiscovery;
         this.enableLogs = enableLogs;
+        this.brandsCache = null; // Cache de marcas
+    }
+
+    async _loadBrands() {
+        if (this.brandsCache) return this.brandsCache;
+
+        try {
+            const sitemapCollection = await getSitemapCollection();
+            const sitemapDoc = await sitemapCollection.findOne({});
+
+            if (sitemapDoc && sitemapDoc.brands) {
+                // Ordenar por longitud de nombre (más largo primero) para evitar matches parciales
+                // Ej: "La Serenísima" antes que "La" para evitar falsos positivos
+                this.brandsCache = sitemapDoc.brands
+                    .filter(b => b.name && b.id !== null)
+                    .map(b => ({
+                        name: b.name,
+                        slug: b.slug,
+                        id: b.id
+                    }))
+                    .sort((a, b) => b.name.length - a.name.length);
+
+                log(`✅ Cargadas ${this.brandsCache.length} marcas para matching`, this.enableLogs);
+            } else {
+                this.brandsCache = [];
+                log(`⚠️ No se encontraron marcas en sitemap_analysis`, this.enableLogs);
+            }
+        } catch (error) {
+            log(`⚠️ Error cargando marcas: ${error.message}`, this.enableLogs);
+            this.brandsCache = [];
+        }
+
+        return this.brandsCache;
+    }
+
+    _extractBrandFromProductName(productName) {
+        if (!productName || !this.brandsCache || this.brandsCache.length === 0) {
+            return null;
+        }
+
+        const normalizedName = productName.toLowerCase().trim();
+
+        // Buscar la marca en el nombre del producto
+        for (const brand of this.brandsCache) {
+            const brandLower = brand.name.toLowerCase();
+
+            // Buscar la marca como palabra completa al inicio o en el medio
+            const regex = new RegExp(`\\b${brandLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+
+            if (regex.test(normalizedName)) {
+                return brand.name; // Retornar el nombre formateado de la marca
+            }
+        }
+
+        return null;
     }
 
     async getProductList() {
+        // Cargar marcas al inicio
+        await this._loadBrands();
+
         let rubros;
 
         if (this.useAutoDiscovery) {
@@ -441,6 +499,7 @@ class CategoryProductStrategy {
                         ...p,
                         categoryId: rubro.id,
                         categoryName: rubro.name,
+                        brand: p.brand || null
                     });
                 }
             }
@@ -450,7 +509,6 @@ class CategoryProductStrategy {
     }
 
     async _fetchProducts(categoryId, page, slug = null) {
-        // Construir URL usando slug si está disponible, sino usar el formato antiguo
         const urlPart = slug
             ? `por-rubro-${slug}-${categoryId}`
             : `por-rubro-xxx-${categoryId}`;
@@ -460,10 +518,42 @@ class CategoryProductStrategy {
         try {
             const res = await client.get(url);
             const $ = cheerio.load(res.data);
-            return $('form.oe_product_cart').map((_, el) => ({
-                product_id: Number($(el).find("input[name='product_id']").val()),
-                product_template_id: Number($(el).find("input[name='product_template_id']").val()),
-            })).get().filter(p => p.product_id && p.product_template_id);
+
+            return $('form.oe_product_cart').map((_, el) => {
+                const $form = $(el);
+
+                const productId = Number($form.find("input[name='product_id']").val());
+                const productTemplateId = Number($form.find("input[name='product_template_id']").val());
+
+                // Extraer el nombre del producto del HTML
+                let productName = null;
+                const nameSelectors = [
+                    '.o_wsale_product_name',
+                    'h6.card-title',
+                    '.product-name',
+                    'h6',
+                    '.card-body h6'
+                ];
+
+                for (const selector of nameSelectors) {
+                    const nameEl = $form.closest('.oe_product, .o_wsale_product_grid_wrapper').find(selector);
+                    if (nameEl.length) {
+                        productName = nameEl.text().trim();
+                        break;
+                    }
+                }
+
+                // Extraer marca del nombre del producto
+                const brand = this._extractBrandFromProductName(productName);
+
+                return {
+                    product_id: productId,
+                    product_template_id: productTemplateId,
+                    brand: brand,
+                    display_name: productName // Opcional: guardar el nombre también
+                };
+            }).get().filter(p => p.product_id && p.product_template_id);
+
         } catch (error) {
             log(`❌ Error en rubro ${categoryId}, página ${page}: ${error.message}`, this.enableLogs);
             return [];
@@ -639,7 +729,7 @@ class ScraperRunner {
             if (!apiData) return null;
 
             const imageUrl = extractImageUrl(apiData.carousel);
-            const productData = await processProductData({
+            return await processProductData({
                 customProductId: customId,
                 productApiData: apiData,
                 imageUrl,
@@ -648,9 +738,8 @@ class ScraperRunner {
                 profitMargin: this.profitMargin,
                 collection: this.collection,
                 sourceUrl: product.sourceUrl,
+                brand: product.brand || null,
             });
-
-            return productData;
         } catch (err) {
             log(`❌ Error detalle ${product.product_template_id}: ${err.message}`, this.enableLogs);
             return null;

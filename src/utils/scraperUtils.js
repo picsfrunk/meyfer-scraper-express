@@ -175,7 +175,8 @@ async function processProductData({
                                       categoryName = null,
                                       profitMargin,
                                       collection,
-                                      sourceUrl = null
+                                      sourceUrl = null,
+                                      brand = null  // ← Recibir la marca como parámetro
                                   }) {
     try {
         // Buscar si el producto ya existe en BD
@@ -191,8 +192,8 @@ async function processProductData({
             existingImageUrl
         );
 
-        // Extraer marca
-        const brand = extractBrand(productApiData.display_name);
+        // Extraer marca: usar la que viene por parámetro, sino extraer de las comillas
+        const productBrand = brand || extractBrand(productApiData.display_name);
 
         // Calcular precio final
         const finalPrice = productApiData.list_price * (1 + profitMargin);
@@ -208,7 +209,7 @@ async function processProductData({
             product_type: productApiData.product_type,
             category_id: categoryId,
             category_name: categoryName,
-            brand: brand,
+            brand: productBrand,  // ← Usar la marca procesada
         };
 
         // Agregar source_url si está disponible (para sitemap scraper)
