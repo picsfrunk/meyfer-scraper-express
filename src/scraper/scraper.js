@@ -32,7 +32,26 @@ const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 function log(message, enableLogs = true) {
     if (enableLogs) {
-        logToFile(message);
+        console.log(message);
+    }
+}
+
+function formatTime(ms) {
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) {
+        const mins = minutes % 60;
+        const secs = seconds % 60;
+        return `${hours}h ${mins}m ${secs}s`;
+    } else if (minutes > 0) {
+        const secs = seconds % 60;
+        return `${minutes}m ${secs}s`;
+    } else {
+        return `${seconds}s`;
     }
 }
 
@@ -74,11 +93,11 @@ async function loginToOdoo() {
         if (res.data.result?.uid) {
             return true;
         } else {
-            logToFile('❌ Falló el login.');
+            log('❌ Falló el login.');
             return false;
         }
     } catch (err) {
-        logToFile(`❌ Error durante login: ${err.message}`);
+        log(`❌ Error durante login: ${err.message}`);
         return false;
     }
 }
@@ -118,7 +137,7 @@ async function fetchProductDetailsFromAPI({ product_id, product_template_id, ref
 
         return response.data.result;
     } catch (error) {
-        logToFile(`❌ Error obteniendo detalles del API para product_id ${product_id}: ${error.message}`);
+        log(`❌ Error obteniendo detalles del API para product_id ${product_id}: ${error.message}`);
         return null;
     }
 }
@@ -183,7 +202,7 @@ async function processProductData({
 
         return productData;
     } catch (error) {
-        await logToFile(`❌ Error procesando datos del producto ${customProductId}: ${error.message}`);
+        log(`❌ Error procesando datos del producto ${customProductId}: ${error.message}`);
         return null;
     }
 }
@@ -317,7 +336,7 @@ async function analyzeSitemap() {
 
         return catalogDocument;
     } catch (error) {
-        log(`❌ Error analizando sitemap: ${error.message}`, true);
+        log(`❌ Error analizando sitemap: ${error.message}`);
         throw error;
     }
 }
@@ -722,6 +741,8 @@ class ScraperRunner {
     }
 
     async run() {
+        const startTime = Date.now();
+
         await this.initialize();
         const products = await this.strategy.getProductList();
         let total = 0, uploaded = 0, errors = 0;
@@ -745,7 +766,52 @@ class ScraperRunner {
             await delay(this.pageDelay);
         }
 
-        return { total, errors, uploaded, processed: products.length };
+        const endTime = Date.now();
+        const totalTime = endTime - startTime;
+
+        // Crear un objeto de log completo para guardar en la BD
+        const logData = {
+            type: 'scraper_execution',
+            strategy: this.strategy.getName(),
+            timestamp: new Date(),
+            stats: {
+                productsProcessed: products.length,
+                savedSuccessfully: total,
+                imagesUploaded: uploaded,
+                errors: errors,
+                duration: totalTime,
+                durationFormatted: formatTime(totalTime),
+                averageTimePerProduct: products.length > 0 ? totalTime / products.length : 0,
+                averageTimePerProductFormatted: products.length > 0 ? formatTime(totalTime / products.length) : '0ms'
+            }
+        };
+
+        // Guardar el log completo en MongoDB
+        await logToFile(logData);
+
+        // Console log para debugging
+        if (this.enableLogs) {
+            console.log('\n' + '='.repeat(60));
+            console.log('✅ SCRAPER FINALIZADO');
+            console.log('='.repeat(60));
+            console.log(`📊 Estadísticas:`);
+            console.log(`   • Productos procesados: ${products.length}`);
+            console.log(`   • Guardados exitosamente: ${total}`);
+            console.log(`   • Imágenes subidas a Cloudinary: ${uploaded}`);
+            console.log(`   • Errores: ${errors}`);
+            console.log(`   • Tiempo total: ${formatTime(totalTime)}`);
+            console.log(`   • Tiempo promedio por producto: ${formatTime(totalTime / products.length)}`);
+            console.log('='.repeat(60) + '\n');
+        }
+
+        return {
+            total,
+            errors,
+            uploaded,
+            processed: products.length,
+            duration: totalTime,
+            durationFormatted: formatTime(totalTime)
+        };
     }
 
     async _fetchAndProcessProduct(product) {
@@ -830,12 +896,5 @@ module.exports = {
     // Clases
     CategoryProductStrategy,
     SitemapProductStrategy,
-    ScraperRunner,
-
-    // Utilidades (por compatibilidad)
-    extractProductIdFromUrl,
-    fetchProductDetailsFromAPI,
-    extractImageUrl,
-    extractBrand,
-    processProductData,
-};
+    ScraperRunner
+}
