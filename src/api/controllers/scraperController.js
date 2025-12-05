@@ -72,7 +72,7 @@ const categoryScraperController = async (req, res) => {
             categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
             pageDelay,
             categoryDelay,
-            webhookUrl: !!webhookUrl,
+            webhookUrl: webhookUrl,
             collection: collection.collectionName
         });
 
