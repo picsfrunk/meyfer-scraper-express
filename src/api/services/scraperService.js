@@ -2,51 +2,49 @@ const { runCategoryScraper, runSitemapScraper, analyzeSitemap } = require('../..
 const { notifyWebhook } = require('./webhookService');
 
 /**
- * Analiza el sitemap.xml y guarda la estructura en MongoDB.
- * Esta función descarga y procesa el sitemap para extraer categorías, marcas y productos.
+ * Helper para inicializar el objeto de resultado con valores por defecto
+ */
+const createInitialResult = () => ({
+    total: 0,
+    processed: 0,
+    errors: 0,
+    totalErrors: 0,
+    uploaded: 0,
+    durationMs: 0,
+    startTime: new Date().toISOString()
+});
+
+/**
+ * Analiza el sitemap.xml
  */
 async function analyzeSitemapService({ webhookUrl }) {
     const source = 'sitemapAnalysis';
     let status = 'success';
-    let result = {
-        totalProducts: 0,
-        totalBrands: 0,
-        totalCategories: 0,
-        source: null,
-        analyzedAt: null
-    };
+    let result = createInitialResult();
+    const start = Date.now();
 
     try {
         const catalogDocument = await analyzeSitemap();
 
-        result = {
-            totalProducts: catalogDocument.summary.totalProducts,
-            totalBrands: catalogDocument.summary.totalBrands,
-            totalCategories: catalogDocument.summary.totalCategories,
-            source: catalogDocument.source,
+        result.processed = catalogDocument.summary.totalProducts;
+        result.total = catalogDocument.summary.totalProducts;
+        result.metadata = {
+            categories: catalogDocument.summary.totalCategories,
+            brands: catalogDocument.summary.totalBrands,
             analyzedAt: catalogDocument.analyzedAt
         };
 
-        console.log(`[scraperService] Sitemap analizado exitosamente: ${result.totalProducts} productos, ${result.totalCategories} categorías, ${result.totalBrands} marcas`);
+        console.log(`[scraperService] Sitemap analizado: ${result.processed} productos`);
     } catch (error) {
         status = 'error';
+        result.totalErrors = 1;
         console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
+        result.durationMs = Date.now() - start;
+        result.endTime = new Date().toISOString();
+
         if (webhookUrl) {
-            await notifyWebhook({
-                webhookUrl,
-                source,
-                status,
-                processed: result.totalProducts,
-                total: result.totalProducts,
-                errors: status === 'error' ? 1 : 0,
-                uploaded: 0,
-                metadata: {
-                    categories: result.totalCategories,
-                    brands: result.totalBrands,
-                    analyzedAt: result.analyzedAt
-                }
-            });
+            await notifyWebhook({ webhookUrl, source, status, result });
         }
     }
 
@@ -65,29 +63,23 @@ async function sitemapScraper({
                               }) {
     const source = 'sitemapScraper';
     let status = 'success';
-    let result = { total: 0, errors: 0, uploaded: 0, processed: 0 };
+    let result = createInitialResult();
 
     try {
-        result = await runSitemapScraper({
+        const scraperResponse = await runSitemapScraper({
             sitemapSource,
             limitProducts,
             pageDelay,
             collection,
         });
+        result = { ...result, ...scraperResponse };
     } catch (error) {
         status = 'error';
+        result.totalErrors = 1;
         console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
         if (webhookUrl) {
-            await notifyWebhook({
-                webhookUrl,
-                source,
-                status,
-                processed: result.processed,
-                total: result.total,
-                errors: result.errors,
-                uploaded: result.uploaded,
-            });
+            await notifyWebhook({ webhookUrl, source, status, result });
         }
     }
 
@@ -106,18 +98,22 @@ async function categoryScraper({
                                }) {
     const source = 'categoryScraper';
     let status = 'success';
-    let result = { total: 0, errors: 0, uploaded: 0, processed: 0 };
+    let result = createInitialResult();
 
     try {
-        result = await runCategoryScraper({
+        const scraperResponse = await runCategoryScraper({
             categoryIds,
             pageDelay,
             categoryDelay,
             collection,
             useAutoDiscovery: true,
         });
+
+        result = { ...result, ...scraperResponse };
+
     } catch (error) {
         status = 'error';
+        result.totalErrors = 1;
         console.error(`[scraperService] Error en ${source}:`, error);
     } finally {
         if (webhookUrl) {
@@ -125,10 +121,7 @@ async function categoryScraper({
                 webhookUrl,
                 source,
                 status,
-                processed: result.processed,
-                total: result.total,
-                errors: result.errors,
-                uploaded: result.uploaded,
+                result
             });
         }
     }

@@ -1,15 +1,5 @@
 const axios = require('axios');
 
-/**
- * Envía una notificación al webhook con información del scraping.
- * @param {Object} params
- * @param {string} params.webhookUrl - URL destino del webhook
- * @param {string} params.source - Nombre del proceso (sitemapScraper | categoryScraper)
- * @param {string} params.status - Estado final del proceso (success | error)
- * @param {Object} [params.result] - Objeto devuelto por el scraper
- * @param {number} [params.processed] - Cantidad procesada (para compatibilidad)
- * @param {Date|string} [params.timestamp] - Marca temporal del evento
- */
 async function notifyWebhook({
                                  webhookUrl,
                                  source,
@@ -20,23 +10,25 @@ async function notifyWebhook({
                              }) {
     if (!webhookUrl) return;
 
-    // Unificar la data
+    const duration = result.durationMs || result.duration || 0;
+    const errors = result.totalErrors ?? result.errors ?? 0;
+
     const payload = {
         source,
         status,
-        processed: processed ?? result.processed ?? 0,
+        processed: processed ?? result.processed ?? result.total ?? 0,
         stats: {
-            durationMs: result.durationMs,
-            totalErrors: result.totalErrors,
-            startedAt: result.startTime,
-            finishedAt: result.endTime,
+            durationMs: duration,
+            totalErrors: errors,
+            startedAt: result.startTime || result.startedAt,
+            finishedAt: result.endTime || result.finishedAt,
         },
         timestamp,
     };
 
     try {
         await axios.post(webhookUrl, payload);
-        console.log(`[webhookService] Webhook enviado (${source}):`, status);
+        console.log(`[webhookService] Webhook enviado (${source}): ${status} | ${duration}ms`);
     } catch (err) {
         console.error('[webhookService] Error notificando al webhook:', err.message);
     }
