@@ -10,7 +10,8 @@ const http = require('http');
 
 const logToFile = require('../utils/logToFile');
 const { processProductImage } = require('../utils/imageUploader');
-const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
+const { connectDB, getConfigCollection, getSitemapCollection } = require('../database/mongo');
+const ScrapedProduct = require('../models/ScrapedProduct.model');
 
 // ============================================================
 // CONFIGURACIÓN Y CLIENTE HTTP
@@ -558,6 +559,7 @@ class ScraperRunner {
     }
 
     async initialize() {
+        await connectDB();
         if (!await loginToOdoo()) throw new Error('Login fallido a Odoo.');
         const configCollection = await getConfigCollection();
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
@@ -578,10 +580,19 @@ class ScraperRunner {
             const details = await this._fetchAndProcessProduct(product);
 
             if (details) {
-                await this.collection.updateOne(
+                // await this.collection.updateOne(
+                //     { product_id: details.product_id },
+                //     { $set: details },
+                //     { upsert: true }
+                // );
+                await ScrapedProduct.findOneAndUpdate(
                     { product_id: details.product_id },
-                    { $set: details },
-                    { upsert: true }
+                    details,
+                    {
+                        upsert: true,
+                        runValidators: true,
+                        new: true
+                    }
                 );
                 total++;
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
