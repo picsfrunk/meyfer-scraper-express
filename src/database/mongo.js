@@ -1,7 +1,21 @@
-// mongo.js
+const mongoose = require('mongoose');
 const { MongoClient } = require('mongodb');
 
 let db = null;
+
+async function connectDB() {
+    if (mongoose.connection.readyState >= 1) return;
+
+    try {
+        await mongoose.connect(process.env.MONGO_URI, {
+            dbName: process.env.MONGO_DB || 'meyfer-scraping',
+        });
+        console.log("✅ Mongoose conectado correctamente");
+    } catch (error) {
+        console.error("❌ Error conectando Mongoose:", error);
+        process.exit(1);
+    }
+}
 
 async function getDB() {
     if (db) return db;
@@ -33,6 +47,7 @@ async function getLogsCollection() {
 }
 
 module.exports = {
+    connectDB,
     getDB,
     getConfigCollection,
     getScrapedCollection,
