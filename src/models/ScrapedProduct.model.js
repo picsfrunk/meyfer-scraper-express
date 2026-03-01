@@ -30,6 +30,10 @@ const scrapedProductSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    priceUpdatedAt: {
+        type: Date,
+        default: Date.now
+    },
     product_type: {
         type: String
     },

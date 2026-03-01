@@ -571,7 +571,7 @@ class ScraperRunner {
         await this.initialize();
 
         const products = await this.strategy.getProductList();
-        let total = 0, uploaded = 0, errors = 0;
+        let total = 0, uploaded = 0, errors = 0, updatedPrices = 0;;
 
         log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
 
@@ -580,20 +580,31 @@ class ScraperRunner {
             const details = await this._fetchAndProcessProduct(product);
 
             if (details) {
-                // await this.collection.updateOne(
-                //     { product_id: details.product_id },
-                //     { $set: details },
-                //     { upsert: true }
-                // );
+                const currentProduct = await ScrapedProduct.findOne({ product_id: details.product_id });
+
+                if (currentProduct) {
+                    if (currentProduct.list_price !== details.list_price) {
+                        details.priceUpdatedAt = new Date();
+                        updatedPrices++;
+                        if (ENABLE_LOGS) {
+                            console.log(`💰 Cambio de precio lista: ${details.display_name} (${currentProduct.list_price} -> ${details.list_price})`);
+                        }
+                    } else {
+                        details.priceUpdatedAt = currentProduct.priceUpdatedAt || currentProduct.updatedAt;
+                    }
+                } else {
+                    details.priceUpdatedAt = new Date();
+                }
+
                 await ScrapedProduct.findOneAndUpdate(
                     { product_id: details.product_id },
                     details,
                     {
                         upsert: true,
-                        runValidators: true,
-                        new: true
+                        runValidators: true
                     }
                 );
+
                 total++;
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
             } else {
@@ -605,30 +616,27 @@ class ScraperRunner {
         const endTime = Date.now();
         const totalTime = endTime - startTime;
 
-        const logData = {
+        const stats = {
+            total,
+            updatedPrices,
+            errors,
+            uploaded,
+            processed: products.length,
+            duration: totalTime
+        };
+
+        await logToFile({
             type: 'scraper_execution',
             strategy: this.strategy.getName(),
             timestamp: new Date(),
-            stats: {
-                productsProcessed: products.length,
-                savedSuccessfully: total,
-                imagesUploaded: uploaded,
-                errors: errors,
-                duration: totalTime,
-                durationFormatted: formatTime(totalTime)
-            }
-        };
-
-        await logToFile(logData);
+            stats
+        });
 
         if (ENABLE_LOGS) {
-            console.log('\n' + '='.repeat(60));
-            console.log('✅ SCRAPER FINALIZADO');
-            console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | ${formatTime(totalTime)}`);
-            console.log('='.repeat(60) + '\n');
+            console.log(`📊 Stats: ${total} OK | ${updatedPrices} Precios Cambiados | ${errors} Errores`);
         }
 
-        return { total, errors, uploaded, processed: products.length, duration: totalTime };
+        return stats;
     }
 
     async _fetchAndProcessProduct(product) {
