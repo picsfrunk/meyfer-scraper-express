@@ -10,8 +10,7 @@ const http = require('http');
 
 const logToFile = require('../utils/logToFile');
 const { processProductImage } = require('../utils/imageUploader');
-const { connectDB, getConfigCollection, getSitemapCollection } = require('../database/mongo');
-const ScrapedProduct = require('../models/ScrapedProduct.model');
+const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
 
 // ============================================================
 // CONFIGURACIÓN Y CLIENTE HTTP
@@ -21,8 +20,10 @@ const BASE_URL = config.baseUrl;
 const ODOO_USER = config.odooUser;
 const ODOO_PASS = config.odooPass;
 const ODOO_DB = config.odooDb;
-// Carga desde entorno. Convierte string "true" a booleano real.
 const ENABLE_LOGS = process.env.ENABLE_LOGS === 'true';
+
+// Cuántos upserts se acumulan antes de hacer un bulkWrite a MongoDB.
+const BATCH_SIZE = 50;
 
 const jar = new tough.CookieJar();
 const client = wrapper(axios.create({ jar, withCredentials: true }));
@@ -133,11 +134,8 @@ function extractBrand(displayName) {
     return brandMatch ? brandMatch[1].trim() : 'generico';
 }
 
-async function processProductData({ customProductId, productApiData, imageUrl, categoryId, categoryName, profitMargin, collection, sourceUrl, brand }) {
+async function processProductData({ customProductId, productApiData, imageUrl, categoryId, categoryName, profitMargin, sourceUrl, brand, existingImageUrl }) {
     try {
-        const existingProduct = await collection.findOne({ product_id: customProductId });
-        const existingImageUrl = existingProduct?.image_url || null;
-
         const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
         const productBrand = brand || extractBrand(productApiData.display_name);
         const finalPrice = productApiData.list_price * (1 + profitMargin);
@@ -174,14 +172,12 @@ async function analyzeSitemap() {
 
     try {
         let content = await fetchSitemap(sitemapUrl);
-        // Limpieza de namespace para facilitar parsing
         content = content.replace('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"', '');
 
         const parser = new xml2js.Parser();
         const result = await parser.parseStringPromise(content);
         const urls = result.urlset.url.map(url => url.loc[0].trim());
 
-        // Estructuras de datos para análisis
         const products = [], brands = [];
         const categoriesData = {}, brandsData = {};
         const productsByCategory = {}, productsByBrand = {};
@@ -230,7 +226,6 @@ async function analyzeSitemap() {
             }
         }
 
-        // Transformación a Arrays para MongoDB
         const categoriesArray = Object.entries(categoriesData)
             .sort((a, b) => (a[1] || 0) - (b[1] || 0))
             .map(([name, id]) => ({
@@ -280,7 +275,6 @@ async function analyzeSitemap() {
 
 async function detectCategoryPages(categoryId, categorySlug) {
     try {
-        // Page 999 fuerza a Odoo/Pagination a mostrar límites o vacío
         const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/999`;
         const response = await client.get(testUrl);
         const $ = cheerio.load(response.data);
@@ -292,7 +286,6 @@ async function detectCategoryPages(categoryId, categorySlug) {
         const activePageNum = parseInt(activePage);
         if (!isNaN(activePageNum) && activePageNum > 0) return activePageNum;
 
-        // Fallback: buscar el número más alto en links
         const pageNumbers = [];
         $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
             const match = $(el).attr('href')?.match(/\/page\/(\d+)/);
@@ -318,7 +311,6 @@ async function discoverCategories() {
             categoriesWithPages.push({ ...cat, pages });
         }
 
-        // Actualizar caché de discovery
         await sitemapCollection.updateOne(
             { source: sitemapDoc.source },
             { $set: { categories: categoriesWithPages, 'summary.lastPageDiscovery': new Date() } }
@@ -367,7 +359,7 @@ class CategoryProductStrategy {
                 this.brandsCache = sitemapDoc.brands
                     .filter(b => b.name && b.id !== null)
                     .map(b => ({ name: b.name, slug: b.slug, id: b.id }))
-                    .sort((a, b) => b.name.length - a.name.length); // Longest first for regex
+                    .sort((a, b) => b.name.length - a.name.length);
                 log(`✅ Cargadas ${this.brandsCache.length} marcas para matching`);
             } else {
                 this.brandsCache = [];
@@ -393,22 +385,18 @@ class CategoryProductStrategy {
     async getProductList() {
         await this._loadBrands();
 
-        // 1. Obtener la fuente de rubros
         const allRubros = this.useAutoDiscovery
             ? await getDiscoveredCategories()
             : require('../config/rubros');
 
-        // 2. Normalizar filtro de IDs (Number, Array, String 'all' o undefined)
         let rubrosToProcess = [];
         const isAll = !this.categoryIds || this.categoryIds === 'all';
 
         if (isAll) {
             rubrosToProcess = allRubros;
         } else {
-            // Aseguramos que sea un array de números, manejando input string o number
             const idsInput = Array.isArray(this.categoryIds) ? this.categoryIds : [this.categoryIds];
             const targetIds = idsInput.map(id => parseInt(id)).filter(id => !isNaN(id));
-
             rubrosToProcess = allRubros.filter(r => targetIds.includes(r.id));
         }
 
@@ -496,7 +484,7 @@ class SitemapProductStrategy {
         let sitemapDoc = await sitemapCollection.findOne(query);
 
         if (!sitemapDoc) {
-            await analyzeSitemap(); // Auto-heal
+            await analyzeSitemap();
             sitemapDoc = await sitemapCollection.findOne(query);
             if (!sitemapDoc) throw new Error('No se pudo obtener sitemap tras análisis.');
         }
@@ -504,7 +492,6 @@ class SitemapProductStrategy {
         const urls = sitemapDoc.productUrls || [];
         if (!urls.length) throw new Error('No se encontraron URLs de productos en sitemap.');
 
-        // Crear mapa de categorías para búsqueda rápida
         this.categoriesMap = {};
         if (Array.isArray(sitemapDoc.categories)) {
             sitemapDoc.categories.forEach(cat => {
@@ -520,7 +507,6 @@ class SitemapProductStrategy {
 
             let categoryId = null, categoryName = null;
 
-            // Inferencia básica de categoría basada en URL slug
             if (slugMatch?.[1] && this.categoriesMap) {
                 const productSlugParts = slugMatch[1].split('-');
                 for (const catSlug in this.categoriesMap) {
@@ -556,14 +542,28 @@ class ScraperRunner {
         this.collection = collection;
         this.pageDelay = pageDelay || config.pageDelay;
         this.profitMargin = 1;
+        // Map en memoria: product_id → image_url existente.
+        // Se carga una sola vez antes del loop, eliminando N reads a la DB.
+        this.existingImagesMap = new Map();
     }
 
     async initialize() {
-        await connectDB();
         if (!await loginToOdoo()) throw new Error('Login fallido a Odoo.');
+
         const configCollection = await getConfigCollection();
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
         this.profitMargin = profitDoc ? profitDoc.value / 100 : 1;
+
+        // CAMBIO: 1 solo read para cargar todas las imágenes existentes en memoria.
+        // Antes se hacía 1 findOne por producto dentro del loop.
+        log('🗄️  Cargando imágenes existentes desde la DB...');
+        const existing = await this.collection
+            .find({}, { projection: { product_id: 1, image_url: 1 } })
+            .toArray();
+        existing.forEach(p => {
+            if (p.product_id) this.existingImagesMap.set(String(p.product_id), p.image_url || null);
+        });
+        log(`✅ ${this.existingImagesMap.size} productos existentes cargados en memoria.`);
     }
 
     async run() {
@@ -571,72 +571,76 @@ class ScraperRunner {
         await this.initialize();
 
         const products = await this.strategy.getProductList();
-        let total = 0, uploaded = 0, errors = 0, updatedPrices = 0;;
+        let total = 0, uploaded = 0, errors = 0;
 
         log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
+
+        // CAMBIO: acumulamos operaciones en un batch y hacemos bulkWrite
+        // cada BATCH_SIZE productos en lugar de 1 updateOne por producto.
+        let batch = [];
 
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
             const details = await this._fetchAndProcessProduct(product);
 
             if (details) {
-                const currentProduct = await ScrapedProduct.findOne({ product_id: details.product_id });
-
-                if (currentProduct) {
-                    if (currentProduct.list_price !== details.list_price) {
-                        details.priceUpdatedAt = new Date();
-                        updatedPrices++;
-                        if (ENABLE_LOGS) {
-                            console.log(`💰 Cambio de precio lista: ${details.display_name} (${currentProduct.list_price} -> ${details.list_price})`);
-                        }
-                    } else {
-                        details.priceUpdatedAt = currentProduct.priceUpdatedAt || currentProduct.updatedAt;
-                    }
-                } else {
-                    details.priceUpdatedAt = new Date();
-                }
-
-                await ScrapedProduct.findOneAndUpdate(
-                    { product_id: details.product_id },
-                    details,
-                    {
+                batch.push({
+                    updateOne: {
+                        filter: { product_id: details.product_id },
+                        update: { $set: details },
                         upsert: true,
-                        runValidators: true
                     }
-                );
+                });
 
-                total++;
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
+
+                // Actualizar el map en memoria con la imagen recién procesada
+                // para que si el mismo producto aparece de nuevo en la misma corrida
+                // ya tenga la URL actualizada sin ir a la DB.
+                this.existingImagesMap.set(String(details.product_id), details.image_url);
             } else {
                 errors++;
             }
+
+            // Flush: cuando el batch está lleno, o al llegar al último producto.
+            const isLast = i === products.length - 1;
+            if (batch.length >= BATCH_SIZE || (isLast && batch.length > 0)) {
+                await this.collection.bulkWrite(batch, { ordered: false });
+                total += batch.length;
+                log(`💾 Batch guardado: ${total}/${products.length} productos.`);
+                batch = [];
+            }
+
             await delay(this.pageDelay);
         }
 
         const endTime = Date.now();
         const totalTime = endTime - startTime;
 
-        const stats = {
-            total,
-            updatedPrices,
-            errors,
-            uploaded,
-            processed: products.length,
-            duration: totalTime
-        };
-
-        await logToFile({
+        const logData = {
             type: 'scraper_execution',
             strategy: this.strategy.getName(),
             timestamp: new Date(),
-            stats
-        });
+            stats: {
+                productsProcessed: products.length,
+                savedSuccessfully: total,
+                imagesUploaded: uploaded,
+                errors: errors,
+                duration: totalTime,
+                durationFormatted: formatTime(totalTime)
+            }
+        };
+
+        await logToFile(logData);
 
         if (ENABLE_LOGS) {
-            console.log(`📊 Stats: ${total} OK | ${updatedPrices} Precios Cambiados | ${errors} Errores`);
+            console.log('\n' + '='.repeat(60));
+            console.log('✅ SCRAPER FINALIZADO');
+            console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | ${formatTime(totalTime)}`);
+            console.log('='.repeat(60) + '\n');
         }
 
-        return stats;
+        return { total, errors, uploaded, processed: products.length, duration: totalTime };
     }
 
     async _fetchAndProcessProduct(product) {
@@ -662,6 +666,9 @@ class ScraperRunner {
 
             if (!apiData) return null;
 
+            // CAMBIO: en vez de hacer findOne a la DB, consultamos el Map en memoria.
+            const existingImageUrl = this.existingImagesMap.get(String(customId)) ?? null;
+
             return await processProductData({
                 customProductId: customId,
                 productApiData: apiData,
@@ -669,9 +676,9 @@ class ScraperRunner {
                 categoryId: product.categoryId,
                 categoryName: product.categoryName,
                 profitMargin: this.profitMargin,
-                collection: this.collection,
                 sourceUrl: product.sourceUrl,
                 brand: product.brand || null,
+                existingImageUrl, // ← ya no se pasa `collection`
             });
         } catch (err) {
             log(`❌ Error detalle ${product.product_template_id}: ${err.message}`);
