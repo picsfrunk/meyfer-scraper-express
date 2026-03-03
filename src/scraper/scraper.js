@@ -571,19 +571,23 @@ class ScraperRunner {
         await this.initialize();
 
         const products = await this.strategy.getProductList();
-        let total = 0, uploaded = 0, errors = 0;
+        let total = 0, uploaded = 0, errors = 0, orphansDeleted = 0;
 
         log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
 
-        // CAMBIO: acumulamos operaciones en un batch y hacemos bulkWrite
-        // cada BATCH_SIZE productos en lugar de 1 updateOne por producto.
         let batch = [];
+
+        // Tracks every product_id procesado en esta corrida.
+        // Al final se compara contra existingImagesMap para detectar huérfanos.
+        const scrapedIds = new Set();
 
         for (let i = 0; i < products.length; i++) {
             const product = products[i];
             const details = await this._fetchAndProcessProduct(product);
 
             if (details) {
+                scrapedIds.add(String(details.product_id));
+
                 batch.push({
                     updateOne: {
                         filter: { product_id: details.product_id },
@@ -594,9 +598,6 @@ class ScraperRunner {
 
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
 
-                // Actualizar el map en memoria con la imagen recién procesada
-                // para que si el mismo producto aparece de nuevo en la misma corrida
-                // ya tenga la URL actualizada sin ir a la DB.
                 this.existingImagesMap.set(String(details.product_id), details.image_url);
             } else {
                 errors++;
@@ -614,6 +615,28 @@ class ScraperRunner {
             await delay(this.pageDelay);
         }
 
+        // ── Limpieza de huérfanos ──────────────────────────────────────────
+        // Solo se ejecuta en corridas completas (categoryIds === 'all').
+        // En corridas parciales, scrapedIds solo tiene los productos de las
+        // categorías solicitadas, lo que generaría falsos positivos al diffear.
+        const isFullRun = !this.strategy.categoryIds || this.strategy.categoryIds === 'all';
+
+        if (isFullRun) {
+            const orphanIds = [...this.existingImagesMap.keys()].filter(id => !scrapedIds.has(id));
+
+            if (orphanIds.length) {
+                log(`🧹 Eliminando ${orphanIds.length} productos huérfanos (presentes en DB pero ausentes en Odoo)...`);
+                await this.collection.deleteMany({ product_id: { $in: orphanIds } });
+                orphansDeleted = orphanIds.length;
+                log(`✅ ${orphansDeleted} huérfanos eliminados.`);
+            } else {
+                log('✅ Sin productos huérfanos. DB sincronizada con Odoo.');
+            }
+        } else {
+            log('⚠️  Corrida parcial: limpieza de huérfanos omitida para evitar falsos positivos.');
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         const endTime = Date.now();
         const totalTime = endTime - startTime;
 
@@ -626,6 +649,7 @@ class ScraperRunner {
                 savedSuccessfully: total,
                 imagesUploaded: uploaded,
                 errors: errors,
+                orphansDeleted: orphansDeleted,
                 duration: totalTime,
                 durationFormatted: formatTime(totalTime)
             }
@@ -636,11 +660,11 @@ class ScraperRunner {
         if (ENABLE_LOGS) {
             console.log('\n' + '='.repeat(60));
             console.log('✅ SCRAPER FINALIZADO');
-            console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | ${formatTime(totalTime)}`);
+            console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | 🧹 ${orphansDeleted} Huérfanos | ${formatTime(totalTime)}`);
             console.log('='.repeat(60) + '\n');
         }
 
-        return { total, errors, uploaded, processed: products.length, duration: totalTime };
+        return { total, errors, uploaded, orphansDeleted, processed: products.length, duration: totalTime };
     }
 
     async _fetchAndProcessProduct(product) {
