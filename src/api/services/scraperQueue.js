@@ -83,7 +83,9 @@ async function notifyQueueStatus(event, job, extra = {}) {
     if (!webhookUrl) return;
 
     const payload = {
-        event,                          // qué ocurrió
+        event,
+        source: 'scraperQueue',
+        status: event,
         job: {
             id: job.id,
             type: job.type,
@@ -95,7 +97,6 @@ async function notifyQueueStatus(event, job, extra = {}) {
     try {
         await notifyWebhook({ webhookUrl, source: 'scraperQueue', status: event, result: payload });
     } catch (err) {
-        // No queremos que un fallo de webhook rompa la cola
         console.error('[ScraperQueue] Error notificando webhook de cola:', err.message);
     }
 }
