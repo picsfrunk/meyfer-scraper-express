@@ -1,5 +1,4 @@
 const { runCategoryScraper, runSitemapScraper, analyzeSitemap } = require('../../scraper/scraper');
-const { notifyWebhook } = require('./webhookService');
 const { enqueue, JOB_TYPES } = require('./scraperQueue');
 
 /**
@@ -16,85 +15,54 @@ const createInitialResult = () => ({
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// HANDLERS INTERNOS (lógica pura, sin gestión de cola)
-// Estos son los que ScraperQueue ejecuta como "job.handler"
+// HANDLERS INTERNOS
+// Lógica pura de scraping. NO llaman notifyWebhook — la cola (scraperQueue)
+// es la única responsable de los webhooks. Si estos handlers lo hicieran
+// también, el backend recibiría el evento 'completed' dos veces → email duplicado.
 // ──────────────────────────────────────────────────────────────────────────
 
-async function _runAnalyzeSitemap({ webhookUrl }) {
-    const source = JOB_TYPES.ANALYZE;
-    let status = 'success';
+async function _runAnalyzeSitemap({ }) {
     let result = createInitialResult();
     const start = Date.now();
 
     try {
         const catalogDocument = await analyzeSitemap();
-
         result.processed = catalogDocument.summary.totalProducts;
-        result.total = catalogDocument.summary.totalProducts;
-        result.metadata = {
+        result.total     = catalogDocument.summary.totalProducts;
+        result.metadata  = {
             categories: catalogDocument.summary.totalCategories,
-            brands: catalogDocument.summary.totalBrands,
-            analyzedAt: catalogDocument.analyzedAt
+            brands:     catalogDocument.summary.totalBrands,
+            analyzedAt: catalogDocument.analyzedAt,
         };
-
         console.log(`[scraperService] Sitemap analizado: ${result.processed} productos`);
     } catch (error) {
-        status = 'error';
         result.totalErrors = 1;
-        console.error(`[scraperService] Error en ${source}:`, error);
+        console.error(`[scraperService] Error en analyzeSitemap:`, error);
+        throw error; // re-throw para que scraperQueue lo marque como 'failed'
     } finally {
         result.durationMs = Date.now() - start;
-        result.endTime = new Date().toISOString();
-
-        if (webhookUrl) {
-            await notifyWebhook({ webhookUrl, source, status, result });
-        }
+        result.endTime    = new Date().toISOString();
     }
 
     return result;
 }
 
-async function _runSitemapScraper({
-                                      sitemapSource,
-                                      limitProducts = 1000,
-                                      pageDelay = process.env.PAGE_DELAY_MS,
-                                      webhookUrl,
-                                      collection,
-                                  }) {
-    const source = JOB_TYPES.SITEMAP;
-    let status = 'success';
+async function _runSitemapScraper({ sitemapSource, limitProducts = 1000, pageDelay = process.env.PAGE_DELAY_MS, collection }) {
     let result = createInitialResult();
 
     try {
-        const scraperResponse = await runSitemapScraper({
-            sitemapSource,
-            limitProducts,
-            pageDelay,
-            collection,
-        });
+        const scraperResponse = await runSitemapScraper({ sitemapSource, limitProducts, pageDelay, collection });
         result = { ...result, ...scraperResponse };
     } catch (error) {
-        status = 'error';
         result.totalErrors = 1;
-        console.error(`[scraperService] Error en ${source}:`, error);
-    } finally {
-        if (webhookUrl) {
-            await notifyWebhook({ webhookUrl, source, status, result });
-        }
+        console.error(`[scraperService] Error en sitemapScraper:`, error);
+        throw error;
     }
 
     return result;
 }
 
-async function _runCategoryScraper({
-                                       categoryIds,
-                                       pageDelay = process.env.PAGE_DELAY_MS,
-                                       categoryDelay,
-                                       webhookUrl,
-                                       collection,
-                                   }) {
-    const source = JOB_TYPES.CATEGORY;
-    let status = 'success';
+async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_DELAY_MS, categoryDelay, collection }) {
     let result = createInitialResult();
 
     try {
@@ -105,59 +73,30 @@ async function _runCategoryScraper({
             collection,
             useAutoDiscovery: true,
         });
-
         result = { ...result, ...scraperResponse };
     } catch (error) {
-        status = 'error';
         result.totalErrors = 1;
-        console.error(`[scraperService] Error en ${source}:`, error);
-    } finally {
-        if (webhookUrl) {
-            await notifyWebhook({ webhookUrl, source, status, result });
-        }
+        console.error(`[scraperService] Error en categoryScraper:`, error);
+        throw error;
     }
 
     return result;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// API PÚBLICA — ahora pasan por la cola
+// API PÚBLICA — todos los jobs pasan por la cola
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Analiza el sitemap.xml
- * Retorna información de encolamiento inmediatamente.
- */
 async function analyzeSitemapService(params) {
-    return enqueue({
-        type: JOB_TYPES.ANALYZE,
-        params,
-        handler: _runAnalyzeSitemap,
-    });
+    return enqueue({ type: JOB_TYPES.ANALYZE, params, handler: _runAnalyzeSitemap });
 }
 
-/**
- * Ejecuta el scraper basado en sitemap.
- * Retorna información de encolamiento inmediatamente.
- */
 async function sitemapScraper(params) {
-    return enqueue({
-        type: JOB_TYPES.SITEMAP,
-        params,
-        handler: _runSitemapScraper,
-    });
+    return enqueue({ type: JOB_TYPES.SITEMAP, params, handler: _runSitemapScraper });
 }
 
-/**
- * Ejecuta el scraper basado en categorías.
- * Retorna información de encolamiento inmediatamente.
- */
 async function categoryScraper(params) {
-    return enqueue({
-        type: JOB_TYPES.CATEGORY,
-        params,
-        handler: _runCategoryScraper,
-    });
+    return enqueue({ type: JOB_TYPES.CATEGORY, params, handler: _runCategoryScraper });
 }
 
 module.exports = {
