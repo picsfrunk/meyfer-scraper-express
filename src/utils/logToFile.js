@@ -54,5 +54,4 @@ const logger = {
         logToFile(message, LOG_LEVELS.DEBUG, module, metadata)
 };
 
-// Exportar tanto la función principal como los helpers
 module.exports = Object.assign(logToFile, logger, { LOG_LEVELS });
