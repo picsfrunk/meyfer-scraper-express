@@ -2,14 +2,23 @@
  * priceChecker.js
  *
  * Servicio liviano de detección de cambios de precios.
- * Usa su propio cliente HTTP con CookieJar independiente del scraper principal
- * para evitar conflictos de sesión entre procesos concurrentes.
+ * Tiene su propio cliente HTTP con CookieJar independiente del scraper principal.
+ *
+ * Flujo:
+ *  1. Login propio a Odoo
+ *  2. Carga productos actuales de MongoDB (product_id + list_price, proyección mínima)
+ *  3. Lee product_template_ids del sitemap cacheado (sin HTTP)
+ *  4. Consulta list_price en Odoo en batches concurrentes con barra de progreso
+ *  5. Clasifica: changed / new / removed
+ *  6. Persiste resultado en DB (colección price_check_results)
+ *  7. Loguea eventos con logToFile
  */
 
-const axios = require('axios');
+const axios   = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
-const tough = require('tough-cookie');
-const { getSitemapCollection, getScrapedCollection } = require('../database/mongo');
+const tough   = require('tough-cookie');
+const logToFile = require('../utils/logToFile');
+const { getSitemapCollection, getScrapedCollection, getDB } = require('../database/mongo');
 
 const BASE_URL  = process.env.BASE_URL;
 const ODOO_USER = process.env.ODOO_USER;
@@ -17,14 +26,12 @@ const ODOO_PASS = process.env.ODOO_PASS;
 const ODOO_DB   = process.env.ODOO_DB;
 
 const CONCURRENCY   = 3;    // requests paralelos — conservador para no saturar Odoo
-const REQUEST_DELAY = 500;  // ms entre batches
+const REQUEST_DELAY = 400;  // ms entre batches
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENTE HTTP PROPIO
-// Instancia independiente con su propia CookieJar.
-// El scraper principal tiene la suya — no compartimos sesión.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function createHttpClient() {
@@ -39,19 +46,36 @@ async function loginToOdoo(client) {
             method:  'call',
             params:  { db: ODOO_DB, login: ODOO_USER, password: ODOO_PASS },
         });
-
         const uid = res.data?.result?.uid;
         if (uid) {
-            console.log(`[priceChecker] Login OK — uid: ${uid}`);
+            await logToFile.info(`Login OK — uid: ${uid}`, 'priceChecker');
             return true;
         }
-
-        console.error('[priceChecker] Login fallido — respuesta sin uid:', JSON.stringify(res.data?.result));
+        await logToFile.error('Login fallido — respuesta sin uid', 'priceChecker', { result: res.data?.result });
         return false;
     } catch (err) {
-        console.error('[priceChecker] Error en login:', err.message);
+        await logToFile.error(`Error en login: ${err.message}`, 'priceChecker');
         return false;
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BARRA DE PROGRESO EN CONSOLA
+// ─────────────────────────────────────────────────────────────────────────────
+
+function renderProgress(current, total, startTime) {
+    const pct      = Math.floor((current / total) * 100);
+    const filled   = Math.floor(pct / 2);           // barra de 50 chars
+    const empty    = 50 - filled;
+    const bar      = '█'.repeat(filled) + '░'.repeat(empty);
+    const elapsedS = ((Date.now() - startTime) / 1000).toFixed(1);
+    const eta      = current > 0
+        ? (((Date.now() - startTime) / current) * (total - current) / 1000).toFixed(0)
+        : '?';
+
+    process.stdout.write(
+        `\r[priceChecker] ${bar} ${pct}% | ${current}/${total} | ${elapsedS}s | ETA: ${eta}s   `
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,11 +106,7 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
         );
 
         const result = response.data?.result;
-
-        if (!result?.list_price) {
-            console.warn(`[priceChecker] Sin list_price para template_id ${product_template_id} — result:`, JSON.stringify(result)?.slice(0, 120));
-            return null;
-        }
+        if (!result?.list_price) return null;
 
         return {
             product_template_id,
@@ -94,25 +114,69 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
             display_name: result.display_name ?? null,
         };
     } catch (err) {
-        console.error(`[priceChecker] Error fetching template_id ${product_template_id}:`, err.message);
+        // Error silencioso por producto — el caller maneja el null
         return null;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BATCHES CON PROGRESO
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runInBatchesWithProgress(tasks, concurrency, delayMs) {
+    const results  = [];
+    const total    = tasks.length;
+    const startTime = Date.now();
+    let completed  = 0;
+
+    for (let i = 0; i < tasks.length; i += concurrency) {
+        const batch       = tasks.slice(i, i + concurrency);
+        const batchResult = await Promise.all(batch.map(t => t()));
+        results.push(...batchResult);
+        completed += batch.length;
+        renderProgress(completed, total, startTime);
+        if (i + concurrency < tasks.length) await delay(delayMs);
+    }
+
+    // Salto de línea al terminar la barra
+    process.stdout.write('\n');
+    return results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PERSISTENCIA DEL RESULTADO
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function persistResult(result) {
+    try {
+        const db         = await getDB();
+        const collection = db.collection('price_check_results');
+
+        // Guardamos solo los IDs en los arrays para no saturar la DB.
+        // El resultado completo (con nombres y precios) lo recibe el webhook.
+        const doc = {
+            checkedAt:   new Date(result.summary.checkedAt),
+            durationMs:  result.summary.durationMs,
+            summary:     result.summary,
+            changedIds:  result.changed.map(p => p.product_id),
+            newIds:      result.new.map(p => String(p.product_template_id)),
+            removedIds:  result.removed.map(p => p.product_id),
+            // Guardamos los detalles completos de changed ya que son los más útiles
+            changedDetail: result.changed,
+        };
+
+        await collection.insertOne(doc);
+        await logToFile.info('Resultado persistido en price_check_results', 'priceChecker', {
+            summary: result.summary,
+        });
+    } catch (err) {
+        await logToFile.error(`Error persistiendo resultado: ${err.message}`, 'priceChecker');
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-
-async function runInBatches(tasks, concurrency, delayMs) {
-    const results = [];
-    for (let i = 0; i < tasks.length; i += concurrency) {
-        const batch       = tasks.slice(i, i + concurrency);
-        const batchResult = await Promise.all(batch.map(t => t()));
-        results.push(...batchResult);
-        if (i + concurrency < tasks.length) await delay(delayMs);
-    }
-    return results;
-}
 
 async function getProductListFromSitemap() {
     const sitemapCollection = await getSitemapCollection();
@@ -136,6 +200,8 @@ async function checkPrices() {
     const start  = Date.now();
     const client = createHttpClient();
 
+    await logToFile.info('Iniciando price check', 'priceChecker');
+
     // ── 1. Login propio ──────────────────────────────────────────────────────
     const loggedIn = await loginToOdoo(client);
     if (!loggedIn) throw new Error('No se pudo autenticar en Odoo.');
@@ -155,20 +221,28 @@ async function checkPrices() {
 
     // ── 3. Lista desde sitemap cacheado ──────────────────────────────────────
     const sitemapProducts = await getProductListFromSitemap();
-    console.log(`[priceChecker] ${sitemapProducts.length} en Odoo | ${dbMap.size} en DB`);
 
-    // ── 4. Consultar precios en Odoo (batches) ───────────────────────────────
+    await logToFile.info(`Comparando precios`, 'priceChecker', {
+        totalOdoo: sitemapProducts.length,
+        totalDB:   dbMap.size,
+    });
+    console.log(`\n[priceChecker] ${sitemapProducts.length} en Odoo | ${dbMap.size} en DB`);
+
+    // ── 4. Consultar precios en Odoo (batches con barra de progreso) ─────────
     const tasks = sitemapProducts.map(p => () => fetchPriceFromOdoo(client, p));
-    const odooResults = await runInBatches(tasks, CONCURRENCY, REQUEST_DELAY);
+    const odooResults = await runInBatchesWithProgress(tasks, CONCURRENCY, REQUEST_DELAY);
 
     const odooMap = new Map();
     for (const r of odooResults) {
         if (r) odooMap.set(String(r.product_template_id), r);
     }
 
-    console.log(`[priceChecker] Odoo respondió ${odooMap.size}/${sitemapProducts.length} productos`);
+    const failedCount = sitemapProducts.length - odooMap.size;
+    if (failedCount > 0) {
+        await logToFile.warn(`${failedCount} productos no respondieron desde Odoo`, 'priceChecker');
+    }
 
-    // ── 5. Clasificar ────────────────────────────────────────────────────────
+    // ── 5. Clasificar diferencias ────────────────────────────────────────────
     const changed  = [];
     const newProds = [];
     const removed  = [];
@@ -214,22 +288,35 @@ async function checkPrices() {
     }
 
     const durationMs = Date.now() - start;
-    console.log(`[priceChecker] Done ${durationMs}ms — changed:${changed.length} new:${newProds.length} removed:${removed.length}`);
 
-    return {
+    const result = {
         summary: {
             changed:    changed.length,
             new:        newProds.length,
             removed:    removed.length,
             total_odoo: odooMap.size,
             total_db:   dbMap.size,
+            failed:     failedCount,
             checkedAt:  new Date().toISOString(),
             durationMs,
         },
+        // Solo IDs en el webhook para no superar límites de payload
+        changedIds:  changed.map(p => p.product_id),
+        newIds:      newProds.map(p => String(p.product_template_id)),
+        removedIds:  removed.map(p => p.product_id),
+        // Detalle completo disponible en la DB
         changed,
         new:     newProds,
         removed,
     };
+
+    await logToFile.info('Price check finalizado', 'priceChecker', { summary: result.summary });
+    console.log(`[priceChecker] Done ${durationMs}ms — changed:${changed.length} new:${newProds.length} removed:${removed.length} failed:${failedCount}`);
+
+    // ── 6. Persistir en DB ───────────────────────────────────────────────────
+    await persistResult(result);
+
+    return result;
 }
 
 module.exports = { checkPrices };
