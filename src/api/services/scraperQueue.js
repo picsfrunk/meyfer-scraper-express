@@ -12,9 +12,10 @@ const logToFile = require('../../utils/logToFile');
 
 // ─── Tipos de job aceptados ────────────────────────────────────────────────
 const JOB_TYPES = {
-    SITEMAP: 'sitemapScraper',
-    CATEGORY: 'categoryScraper',
-    ANALYZE: 'sitemapAnalysis',
+    SITEMAP:      'sitemapScraper',
+    CATEGORY:     'categoryScraper',
+    ANALYZE:      'sitemapAnalysis',
+    PRICE_CHECK:  'priceCheck',
 };
 
 // ─── Estado interno del singleton ─────────────────────────────────────────
