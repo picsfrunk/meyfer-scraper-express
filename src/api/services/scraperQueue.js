@@ -12,9 +12,10 @@ const logToFile = require('../../utils/logToFile');
 
 // ─── Tipos de job aceptados ────────────────────────────────────────────────
 const JOB_TYPES = {
-    SITEMAP: 'sitemapScraper',
-    CATEGORY: 'categoryScraper',
-    ANALYZE: 'sitemapAnalysis',
+    SITEMAP:      'sitemapScraper',
+    CATEGORY:     'categoryScraper',
+    ANALYZE:      'sitemapAnalysis',
+    PRICE_CHECK:  'priceCheck',
 };
 
 // ─── Estado interno del singleton ─────────────────────────────────────────
@@ -125,7 +126,8 @@ async function executeJob(job) {
         result = { error: err.message };
         console.error(`[ScraperQueue] Job ${job.id} falló:`, err.message);
     } finally {
-        // Registrar en historial
+        // Registrar en historial — sanitizar result para no guardar arrays
+        // masivos de productos (ej: price check con 1500+ items en changed/new/removed)
         history.unshift({
             id: job.id,
             type: job.type,
@@ -133,7 +135,7 @@ async function executeJob(job) {
             startedAt: runningJob.startedAt,
             finishedAt: new Date().toISOString(),
             durationMs: Date.now() - new Date(runningJob.startedAt).getTime(),
-            result,
+            result: _sanitizeResult(result, job.type),
         });
         if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
 
@@ -204,6 +206,34 @@ async function enqueue({ type, params, handler }) {
     executeJob(job);
 
     return { jobId: job.id, queued: false, position: 0, queueSnapshot: getQueueSnapshot() };
+}
+
+/**
+ * Sanitiza el result antes de guardarlo en el historial en memoria.
+ * Elimina arrays de productos para evitar que /scraper/status devuelva
+ * payloads masivos (ej: price check con 1500+ productos en changed/new/removed).
+ * Solo guarda conteos y stats — el detalle completo queda en MongoDB.
+ */
+function _sanitizeResult(result, jobType) {
+    if (!result) return null;
+    if (result.error) return { error: result.error };
+
+    if (jobType === JOB_TYPES.PRICE_CHECK) {
+        return {
+            summary:  result.summary ?? null,
+            durationMs: result.summary?.durationMs ?? result.durationMs ?? null,
+        };
+    }
+
+    // Scrapers estándar — ya no tienen arrays grandes, solo stats
+    return {
+        total:          result.total          ?? null,
+        processed:      result.processed      ?? null,
+        errors:         result.errors         ?? result.totalErrors ?? null,
+        uploaded:       result.uploaded       ?? null,
+        orphansDeleted: result.orphansDeleted ?? null,
+        durationMs:     result.durationMs     ?? null,
+    };
 }
 
 /**

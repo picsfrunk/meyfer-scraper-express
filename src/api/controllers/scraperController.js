@@ -158,4 +158,5 @@ module.exports = {
     sitemapScraperController,
     analyzeSitemapController,
     scraperStatusController,
+    buildAcceptedResponse,   // exportada para reusar en otros controllers
 };
