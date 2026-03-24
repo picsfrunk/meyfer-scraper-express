@@ -88,8 +88,9 @@ async function notifyQueueStatus(event, job, extra = {}) {
         source: 'scraperQueue',
         status: event,
         job: {
-            id: job.id,
-            type: job.type,
+            id:     job.id,
+            type:   job.type,
+            params: job.params ?? null,
         },
         queueSnapshot: getQueueSnapshot(),
         ...extra,

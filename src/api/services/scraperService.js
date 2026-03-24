@@ -47,7 +47,7 @@ async function _runAnalyzeSitemap({ }) {
     return result;
 }
 
-async function _runSitemapScraper({ sitemapSource, limitProducts = 1000, pageDelay = process.env.PAGE_DELAY_MS, collection }) {
+async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDelay = process.env.PAGE_DELAY_MS, collection }) {
     let result = createInitialResult();
 
     try {
