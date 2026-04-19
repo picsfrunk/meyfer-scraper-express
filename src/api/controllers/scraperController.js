@@ -1,5 +1,5 @@
 const ScraperService = require('../services/scraperService');
-const { getStatus } = require('../services/scraperQueue');
+const { getStatus, cancelJob, cancelAllJobs } = require('../services/scraperQueue');
 const logToFile = require('../../utils/logToFile');
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -153,10 +153,78 @@ const scraperStatusController = (req, res) => {
     res.status(200).json(getStatus());
 };
 
+// ──────────────────────────────────────────────────────────────────────────
+// CANCELACIÓN DE JOBS
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * DELETE /scraper/jobs/:jobId
+ *
+ * Cancela un job específico por ID.
+ * - 200: job cancelado (estaba pendiente o en ejecución).
+ * - 400: el job ya está completado/fallido.
+ * - 404: jobId no encontrado.
+ */
+const cancelJobController = async (req, res) => {
+    const { jobId } = req.params;
+    try {
+        const result = await cancelJob(jobId);
+
+        if (result === null) {
+            return res.status(404).json({ status: 'error', message: `Job '${jobId}' no encontrado.` });
+        }
+
+        if (result.alreadyDone) {
+            return res.status(400).json({
+                status: 'error',
+                message: `El job '${jobId}' ya finalizó con estado '${result.status}' y no puede ser cancelado.`,
+                jobStatus: result.status,
+            });
+        }
+
+        const message = result.wasRunning
+            ? `Solicitud de cancelación enviada al job '${jobId}' en ejecución. Finalizará al completar la operación actual.`
+            : `Job '${jobId}' eliminado de la cola de espera.`;
+
+        return res.status(200).json({ status: 'cancelled', jobId, message, ...result });
+    } catch (error) {
+        console.error('Error en cancelJobController', { error: error.message, jobId });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
+/**
+ * DELETE /scraper/jobs/all
+ *
+ * Purga todos los jobs pendientes de la cola.
+ * El job en ejecución (si lo hay) no se ve afectado.
+ * - 200: purga completada con conteo de jobs eliminados.
+ */
+const cancelAllJobsController = async (req, res) => {
+    try {
+        const result = await cancelAllJobs();
+        return res.status(200).json({
+            status: 'purged',
+            message: `${result.cancelledCount} job(s) pendiente(s) eliminado(s) de la cola.`,
+            cancelledCount: result.cancelledCount,
+            queueSnapshot: result.queueSnapshot,
+        });
+    } catch (error) {
+        console.error('Error en cancelAllJobsController', { error: error.message });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
 module.exports = {
     categoryScraperController,
     sitemapScraperController,
     analyzeSitemapController,
     scraperStatusController,
+    cancelJobController,
+    cancelAllJobsController,
     buildAcceptedResponse,   // exportada para reusar en otros controllers
 };

@@ -120,16 +120,36 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BATCHES CON PROGRESO
+// BATCHES CON PROGRESO Y SOPORTE DE CANCELACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function runInBatchesWithProgress(tasks, concurrency, delayMs) {
-    const results  = [];
-    const total    = tasks.length;
+/**
+ * Ejecuta tasks en batches concurrentes.
+ *
+ * @param {Function[]} tasks      - Array de funciones async () => result
+ * @param {number}     concurrency
+ * @param {number}     delayMs    - Delay entre batches
+ * @param {object}     [signal]   - { cancelled: false } — mutado por cancelJob()
+ *
+ * Si signal.cancelled es true al inicio de un batch, lanza un error para
+ * interrumpir el loop. El error es capturado por checkPrices() y relanzado
+ * para que scraperQueue lo registre como status 'cancelled'.
+ */
+async function runInBatchesWithProgress(tasks, concurrency, delayMs, signal) {
+    const results   = [];
+    const total     = tasks.length;
     const startTime = Date.now();
-    let completed  = 0;
+    let completed   = 0;
 
     for (let i = 0; i < tasks.length; i += concurrency) {
+
+        // ── Chequeo de cancelación ─────────────────────────────────────────
+        if (signal?.cancelled) {
+            process.stdout.write('\n');
+            throw new Error('Price check cancelado por solicitud del usuario.');
+        }
+        // ──────────────────────────────────────────────────────────────────
+
         const batch       = tasks.slice(i, i + concurrency);
         const batchResult = await Promise.all(batch.map(t => t()));
         results.push(...batchResult);
@@ -196,7 +216,14 @@ async function getProductListFromSitemap() {
 // COMPARACIÓN PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function checkPrices() {
+/**
+ * Ejecuta el price check completo.
+ *
+ * @param {object} [signal] - { cancelled: false } propagado desde scraperQueue.
+ *   Si cancelJob() lo muta a true durante el loop de batches, se lanza un error
+ *   que aborta el proceso. scraperQueue lo captura y registra el job como 'cancelled'.
+ */
+async function checkPrices(signal) {
     const start  = Date.now();
     const client = createHttpClient();
 
@@ -229,8 +256,10 @@ async function checkPrices() {
     console.log(`\n[priceChecker] ${sitemapProducts.length} en Odoo | ${dbMap.size} en DB`);
 
     // ── 4. Consultar precios en Odoo (batches con barra de progreso) ─────────
+    // El signal se pasa al loop de batches para poder interrumpirlo si se
+    // solicita cancelación mientras el price check está en ejecución.
     const tasks = sitemapProducts.map(p => () => fetchPriceFromOdoo(client, p));
-    const odooResults = await runInBatchesWithProgress(tasks, CONCURRENCY, REQUEST_DELAY);
+    const odooResults = await runInBatchesWithProgress(tasks, CONCURRENCY, REQUEST_DELAY, signal);
 
     const odooMap = new Map();
     for (const r of odooResults) {

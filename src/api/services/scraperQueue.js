@@ -19,7 +19,7 @@ const JOB_TYPES = {
 };
 
 // ─── Estado interno del singleton ─────────────────────────────────────────
-let runningJob = null;          // { id, type, startedAt, params }
+let runningJob = null;          // { id, type, startedAt, params, signal }
 const queue = [];               // Array de jobs pendientes: { id, type, params, enqueuedAt }
 let jobCounter = 0;             // Autoincremental para IDs únicos
 
@@ -75,7 +75,7 @@ async function logQueueEvent(event, details = {}) {
 /**
  * Emite un webhook de estado de cola si el job tiene webhookUrl.
  *
- * @param {'enqueued'|'started'|'completed'|'failed'} event
+ * @param {'enqueued'|'started'|'completed'|'failed'|'cancelled'} event
  * @param {object} job     - Job que dispara el evento
  * @param {object} [extra] - Resultado o detalle adicional
  */
@@ -109,10 +109,22 @@ async function notifyQueueStatus(event, job, extra = {}) {
 
 /**
  * Ejecuta el handler del job y gestiona su ciclo de vida completo:
- * running → completed/failed → dequeue → trigger next.
+ * running → completed/failed/cancelled → dequeue → trigger next.
+ *
+ * El `signal` es un objeto { cancelled: false } que se pasa al handler.
+ * Cuando cancelJob() lo setea en true, el handler lo detecta en su próxima
+ * iteración y corta el loop limpiamente.
  */
 async function executeJob(job) {
-    runningJob = { id: job.id, type: job.type, startedAt: new Date().toISOString(), params: job.params };
+    const signal = { cancelled: false };
+
+    runningJob = {
+        id: job.id,
+        type: job.type,
+        startedAt: new Date().toISOString(),
+        params: job.params,
+        signal,   // ← referencia al signal para que cancelJob() pueda mutar cancelled
+    };
 
     await logQueueEvent('job_started', { jobId: job.id, type: job.type });
     await notifyQueueStatus('started', job);
@@ -121,12 +133,17 @@ async function executeJob(job) {
     let status = 'completed';
 
     try {
-        result = await job.handler(job.params);
+        result = await job.handler(job.params, signal);  // ← signal como segundo argumento
     } catch (err) {
         status = 'failed';
         result = { error: err.message };
         console.error(`[ScraperQueue] Job ${job.id} falló:`, err.message);
     } finally {
+        // Si el signal fue activado durante la ejecución, registrar como 'cancelled'
+        if (signal.cancelled) {
+            status = 'cancelled';
+        }
+
         // Registrar en historial — sanitizar result para no guardar arrays
         // masivos de productos (ej: price check con 1500+ items en changed/new/removed)
         history.unshift({
@@ -169,7 +186,7 @@ function processNext() {
  * @param {object} options
  * @param {string}   options.type     - Uno de JOB_TYPES
  * @param {object}   options.params   - Parámetros originales del controller (incluye webhookUrl)
- * @param {Function} options.handler  - async (params) => result
+ * @param {Function} options.handler  - async (params, signal) => result
  *
  * @returns {{ jobId: string, queued: boolean, position: number, queueSnapshot: object }}
  */
@@ -221,7 +238,7 @@ function _sanitizeResult(result, jobType) {
 
     if (jobType === JOB_TYPES.PRICE_CHECK) {
         return {
-            summary:  result.summary ?? null,
+            summary:    result.summary ?? null,
             durationMs: result.summary?.durationMs ?? result.durationMs ?? null,
         };
     }
@@ -247,8 +264,75 @@ function getStatus() {
     };
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// CANCELACIÓN DE JOBS
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Cancela un job por su ID.
+ *
+ * - Si está en la cola de espera: lo elimina y ajusta las posiciones.
+ * - Si está en ejecución: activa signal.cancelled = true (graceful shutdown).
+ *   El handler lo detecta en su próxima iteración y corta el loop.
+ *   El job será registrado como 'cancelled' en el finally de executeJob.
+ * - Si ya está completado/fallido (en historial): retorna `{ alreadyDone: true, status }`.
+ * - Si no existe: retorna `null`.
+ *
+ * @param {string} jobId
+ * @returns {{ cancelled: boolean, wasQueued?: boolean, wasRunning?: boolean,
+ *             alreadyDone?: boolean, status?: string } | null}
+ */
+async function cancelJob(jobId) {
+    // 1. Buscar en cola de espera
+    const queueIndex = queue.findIndex((j) => j.id === jobId);
+    if (queueIndex !== -1) {
+        const [removed] = queue.splice(queueIndex, 1);
+        await logQueueEvent('job_cancelled_queued', { jobId, type: removed.type });
+        await notifyQueueStatus('cancelled', removed, { reason: 'cancelled_from_queue' });
+        return { cancelled: true, wasQueued: true };
+    }
+
+    // 2. Verificar si está en ejecución — activar el signal
+    if (runningJob && runningJob.id === jobId) {
+        runningJob.signal.cancelled = true;  // ← el handler lo verá en su próxima iteración
+        await logQueueEvent('job_cancel_requested', { jobId, type: runningJob.type });
+        return { cancelled: true, wasRunning: true };
+    }
+
+    // 3. Buscar en historial
+    const historyEntry = history.find((h) => h.id === jobId);
+    if (historyEntry) {
+        return { cancelled: false, alreadyDone: true, status: historyEntry.status };
+    }
+
+    // 4. No encontrado
+    return null;
+}
+
+/**
+ * Cancela todos los jobs pendientes de la cola.
+ * El job en ejecución (si lo hay) NO se interrumpe.
+ *
+ * @returns {{ cancelledCount: number, queueSnapshot: object }}
+ */
+async function cancelAllJobs() {
+    const cancelledCount = queue.length;
+    const cancelledJobs = queue.splice(0, queue.length); // vaciar cola
+
+    await logQueueEvent('queue_purged', { cancelledCount });
+
+    // Notificar webhook por cada job cancelado (si tiene webhookUrl)
+    for (const job of cancelledJobs) {
+        await notifyQueueStatus('cancelled', job, { reason: 'queue_purged' });
+    }
+
+    return { cancelledCount, queueSnapshot: getQueueSnapshot() };
+}
+
 module.exports = {
     JOB_TYPES,
     enqueue,
     getStatus,
+    cancelJob,
+    cancelAllJobs,
 };
