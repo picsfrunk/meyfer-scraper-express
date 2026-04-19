@@ -554,14 +554,15 @@ class SitemapProductStrategy {
 // ============================================================
 
 class ScraperRunner {
-    constructor({ strategy, collection, pageDelay, categoryDelay }) {
+    constructor({ strategy, collection, pageDelay, categoryDelay, signal }) {
         this.strategy = strategy;
         this.collection = collection;
         this.pageDelay = pageDelay || config.pageDelay;
         this.profitMargin = 1;
-        // Map en memoria: product_id → image_url existente.
-        // Se carga una sola vez antes del loop, eliminando N reads a la DB.
         this.existingImagesMap = new Map();
+        // signal: objeto { cancelled: false } compartido con scraperQueue.
+        // cancelJob() lo muta a { cancelled: true } para interrumpir el loop.
+        this.signal = signal ?? null;
     }
 
     async initialize() {
@@ -571,8 +572,6 @@ class ScraperRunner {
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
         this.profitMargin = profitDoc ? profitDoc.value / 100 : 1;
 
-        // CAMBIO: 1 solo read para cargar todas las imágenes existentes en memoria.
-        // Antes se hacía 1 findOne por producto dentro del loop.
         log('🗄️  Cargando imágenes existentes desde la DB...');
         const existing = await this.collection
             .find({}, { projection: { product_id: 1, image_url: 1 } })
@@ -593,12 +592,25 @@ class ScraperRunner {
         log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
 
         let batch = [];
-
-        // Tracks every product_id procesado en esta corrida.
-        // Al final se compara contra existingImagesMap para detectar huérfanos.
         const scrapedIds = new Set();
 
         for (let i = 0; i < products.length; i++) {
+
+            // ── Chequeo de cancelación ──────────────────────────────────
+            // Si cancelJob() activó el signal, hacer flush del batch parcial
+            // y salir del loop limpiamente antes de procesar el siguiente producto.
+            if (this.signal?.cancelled) {
+                log('\n🛑 Cancelación solicitada — deteniendo scraper.');
+                if (batch.length > 0) {
+                    await this.collection.bulkWrite(batch, { ordered: false });
+                    total += batch.length;
+                    log(`💾 Flush parcial: ${batch.length} productos guardados antes de cancelar.`);
+                    batch = [];
+                }
+                break;
+            }
+            // ────────────────────────────────────────────────────────────
+
             const product = products[i];
             renderProgress(i + 1, products.length, startTime, `OK:${total} Err:${errors}`);
             const details = await this._fetchAndProcessProduct(product);
@@ -634,12 +646,12 @@ class ScraperRunner {
         }
 
         // ── Limpieza de huérfanos ──────────────────────────────────────────
-        // Solo se ejecuta en corridas completas (categoryIds === 'all').
-        // En corridas parciales, scrapedIds solo tiene los productos de las
-        // categorías solicitadas, lo que generaría falsos positivos al diffear.
+        // Solo se ejecuta en corridas completas (categoryIds === 'all') y cuando
+        // el scraper NO fue cancelado (una corrida cancelada es parcial por definición).
         const isFullRun = !this.strategy.categoryIds || this.strategy.categoryIds === 'all';
+        const wasCancelled = this.signal?.cancelled ?? false;
 
-        if (isFullRun) {
+        if (isFullRun && !wasCancelled) {
             const orphanIds = [...this.existingImagesMap.keys()].filter(id => !scrapedIds.has(id));
 
             if (orphanIds.length) {
@@ -650,6 +662,8 @@ class ScraperRunner {
             } else {
                 log('✅ Sin productos huérfanos. DB sincronizada con Odoo.');
             }
+        } else if (wasCancelled) {
+            log('⚠️  Corrida cancelada: limpieza de huérfanos omitida.');
         } else {
             log('⚠️  Corrida parcial: limpieza de huérfanos omitida para evitar falsos positivos.');
         }
@@ -668,6 +682,7 @@ class ScraperRunner {
                 imagesUploaded: uploaded,
                 errors: errors,
                 orphansDeleted: orphansDeleted,
+                cancelled: wasCancelled,
                 duration: totalTime,
                 durationFormatted: formatTime(totalTime)
             }
@@ -677,7 +692,7 @@ class ScraperRunner {
 
         if (ENABLE_LOGS) {
             console.log('\n' + '='.repeat(60));
-            console.log('✅ SCRAPER FINALIZADO');
+            console.log(wasCancelled ? '🛑 SCRAPER CANCELADO' : '✅ SCRAPER FINALIZADO');
             console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | 🧹 ${orphansDeleted} Huérfanos | ${formatTime(totalTime)}`);
             console.log('='.repeat(60) + '\n');
         }
@@ -708,7 +723,6 @@ class ScraperRunner {
 
             if (!apiData) return null;
 
-            // CAMBIO: en vez de hacer findOne a la DB, consultamos el Map en memoria.
             const existingImageUrl = this.existingImagesMap.get(String(customId)) ?? null;
 
             return await processProductData({
@@ -720,7 +734,7 @@ class ScraperRunner {
                 profitMargin: this.profitMargin,
                 sourceUrl: product.sourceUrl,
                 brand: product.brand || null,
-                existingImageUrl, // ← ya no se pasa `collection`
+                existingImageUrl,
             });
         } catch (err) {
             log(`❌ Error detalle ${product.product_template_id}: ${err.message}`);
@@ -736,6 +750,6 @@ class ScraperRunner {
 module.exports = {
     client, BASE_URL, loginToOdoo, analyzeSitemap, discoverCategories, getDiscoveredCategories,
     runCategoryScraper: async (opts) => new ScraperRunner({ ...opts, strategy: new CategoryProductStrategy(opts) }).run(),
-    runSitemapScraper: async (opts) => new ScraperRunner({ ...opts, strategy: new SitemapProductStrategy(opts) }).run(),
+    runSitemapScraper:  async (opts) => new ScraperRunner({ ...opts, strategy: new SitemapProductStrategy(opts) }).run(),
     CategoryProductStrategy, SitemapProductStrategy, ScraperRunner
 };

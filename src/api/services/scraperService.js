@@ -19,13 +19,19 @@ const createInitialResult = () => ({
 // Lógica pura de scraping. NO llaman notifyWebhook — la cola (scraperQueue)
 // es la única responsable de los webhooks. Si estos handlers lo hicieran
 // también, el backend recibiría el evento 'completed' dos veces → email duplicado.
+//
+// Todos reciben `signal` como segundo argumento y lo propagan al runner.
+// El signal es un objeto { cancelled: false } mutado por cancelJob() cuando
+// el usuario solicita la cancelación del job en ejecución.
 // ──────────────────────────────────────────────────────────────────────────
 
-async function _runAnalyzeSitemap({ }) {
+async function _runAnalyzeSitemap({ }, signal) {
     let result = createInitialResult();
     const start = Date.now();
 
     try {
+        // analyzeSitemap no tiene loop largo — el signal no es necesario aquí,
+        // pero se recibe por consistencia con el resto de handlers.
         const catalogDocument = await analyzeSitemap();
         result.processed = catalogDocument.summary.totalProducts;
         result.total     = catalogDocument.summary.totalProducts;
@@ -47,11 +53,17 @@ async function _runAnalyzeSitemap({ }) {
     return result;
 }
 
-async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDelay = process.env.PAGE_DELAY_MS, collection }) {
+async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDelay = process.env.PAGE_DELAY_MS, collection }, signal) {
     let result = createInitialResult();
 
     try {
-        const scraperResponse = await runSitemapScraper({ sitemapSource, limitProducts, pageDelay, collection });
+        const scraperResponse = await runSitemapScraper({
+            sitemapSource,
+            limitProducts,
+            pageDelay,
+            collection,
+            signal,  // ← propagado al ScraperRunner
+        });
         result = { ...result, ...scraperResponse };
     } catch (error) {
         result.totalErrors = 1;
@@ -62,7 +74,7 @@ async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDel
     return result;
 }
 
-async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_DELAY_MS, categoryDelay, collection }) {
+async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_DELAY_MS, categoryDelay, collection }, signal) {
     let result = createInitialResult();
 
     try {
@@ -72,6 +84,7 @@ async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_D
             categoryDelay,
             collection,
             useAutoDiscovery: true,
+            signal,  // ← propagado al ScraperRunner
         });
         result = { ...result, ...scraperResponse };
     } catch (error) {

@@ -7,12 +7,15 @@ const { enqueue, JOB_TYPES } = require('./scraperQueue');
 // HANDLER INTERNO
 // Lógica pura del price check — no sabe nada de cola ni webhooks.
 // La cola (scraperQueue) es la responsable de los webhooks de ciclo de vida
-// (started, completed, failed). El webhook con el resultado del price check
-// lo envía este service al terminar.
+// (started, completed, failed, cancelled). El webhook con el resultado del
+// price check lo envía este service al terminar.
+//
+// Recibe `signal` como segundo argumento y lo propaga a checkPrices(),
+// que lo usa para interrumpir el loop de batches si se solicita cancelación.
 // ──────────────────────────────────────────────────────────────────────────
 
-async function _runPriceCheck({ webhookUrl }) {
-    const result = await checkPrices();
+async function _runPriceCheck({ webhookUrl }, signal) {
+    const result = await checkPrices(signal);  // ← signal propagado al loop de batches
 
     if (webhookUrl) {
         await _notifyWebhook(webhookUrl, {
