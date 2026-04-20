@@ -63,20 +63,7 @@ async function loginToOdoo(client) {
 // BARRA DE PROGRESO EN CONSOLA
 // ─────────────────────────────────────────────────────────────────────────────
 
-function renderProgress(current, total, startTime) {
-    const pct      = Math.floor((current / total) * 100);
-    const filled   = Math.floor(pct / 2);           // barra de 50 chars
-    const empty    = 50 - filled;
-    const bar      = '█'.repeat(filled) + '░'.repeat(empty);
-    const elapsedS = ((Date.now() - startTime) / 1000).toFixed(1);
-    const eta      = current > 0
-        ? (((Date.now() - startTime) / current) * (total - current) / 1000).toFixed(0)
-        : '?';
 
-    process.stdout.write(
-        `\r[priceChecker] ${bar} ${pct}% | ${current}/${total} | ${elapsedS}s | ETA: ${eta}s   `
-    );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FETCH DE PRECIO INDIVIDUAL
@@ -120,7 +107,7 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BATCHES CON PROGRESO Y SOPORTE DE CANCELACIÓN
+// BATCHES CONCURRENTES CON SOPORTE DE CANCELACIÓN
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -136,16 +123,12 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
  * para que scraperQueue lo registre como status 'cancelled'.
  */
 async function runInBatchesWithProgress(tasks, concurrency, delayMs, signal) {
-    const results   = [];
-    const total     = tasks.length;
-    const startTime = Date.now();
-    let completed   = 0;
+    const results = [];
 
     for (let i = 0; i < tasks.length; i += concurrency) {
 
         // ── Chequeo de cancelación ─────────────────────────────────────────
         if (signal?.cancelled) {
-            process.stdout.write('\n');
             throw new Error('Price check cancelado por solicitud del usuario.');
         }
         // ──────────────────────────────────────────────────────────────────
@@ -153,13 +136,10 @@ async function runInBatchesWithProgress(tasks, concurrency, delayMs, signal) {
         const batch       = tasks.slice(i, i + concurrency);
         const batchResult = await Promise.all(batch.map(t => t()));
         results.push(...batchResult);
-        completed += batch.length;
-        renderProgress(completed, total, startTime);
+
         if (i + concurrency < tasks.length) await delay(delayMs);
     }
 
-    // Salto de línea al terminar la barra
-    process.stdout.write('\n');
     return results;
 }
 

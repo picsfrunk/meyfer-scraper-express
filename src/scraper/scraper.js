@@ -51,22 +51,7 @@ function formatTime(ms) {
     return `${seconds}s`;
 }
 
-function renderProgress(current, total, startTime, label = '') {
-    const pct     = Math.floor((current / total) * 100);
-    const filled  = Math.floor(pct / 2);
-    const bar     = '█'.repeat(filled) + '░'.repeat(50 - filled);
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const eta     = current > 0
-        ? (((Date.now() - startTime) / current) * (total - current) / 1000).toFixed(0)
-        : '?';
-    const suffix  = label ? ` | ${label}` : '';
 
-    process.stdout.write(
-        `\r  ${bar} ${String(pct).padStart(3)}% | ${current}/${total} | ${elapsed}s | ETA: ${eta}s${suffix}   `
-    );
-
-    if (current === total) process.stdout.write('\n');
-}
 
 async function fetchSitemap(url) {
     return new Promise((resolve, reject) => {
@@ -612,7 +597,7 @@ class ScraperRunner {
             // ────────────────────────────────────────────────────────────
 
             const product = products[i];
-            renderProgress(i + 1, products.length, startTime, `OK:${total} Err:${errors}`);
+
             const details = await this._fetchAndProcessProduct(product);
 
             if (details) {
