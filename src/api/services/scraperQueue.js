@@ -75,7 +75,7 @@ async function logQueueEvent(event, details = {}) {
 /**
  * Emite un webhook de estado de cola si el job tiene webhookUrl.
  *
- * @param {'enqueued'|'started'|'completed'|'failed'|'cancelled'} event
+ * @param {'enqueued'|'started'|'completed'|'failed'|'canceled'} event
  * @param {object} job     - Job que dispara el evento
  * @param {object} [extra] - Resultado o detalle adicional
  */
@@ -109,21 +109,21 @@ async function notifyQueueStatus(event, job, extra = {}) {
 
 /**
  * Ejecuta el handler del job y gestiona su ciclo de vida completo:
- * running → completed/failed/cancelled → dequeue → trigger next.
+ * running → completed/failed/canceled → dequeue → trigger next.
  *
- * El `signal` es un objeto { cancelled: false } que se pasa al handler.
+ * El `signal` es un objeto { canceled: false } que se pasa al handler.
  * Cuando cancelJob() lo setea en true, el handler lo detecta en su próxima
  * iteración y corta el loop limpiamente.
  */
 async function executeJob(job) {
-    const signal = { cancelled: false };
+    const signal = { canceled: false };
 
     runningJob = {
         id: job.id,
         type: job.type,
         startedAt: new Date().toISOString(),
         params: job.params,
-        signal,   // ← referencia al signal para que cancelJob() pueda mutar cancelled
+        signal,   // ← referencia al signal para que cancelJob() pueda mutar canceled
     };
 
     await logQueueEvent('job_started', { jobId: job.id, type: job.type });
@@ -139,9 +139,9 @@ async function executeJob(job) {
         result = { error: err.message };
         console.error(`[ScraperQueue] Job ${job.id} falló:`, err.message);
     } finally {
-        // Si el signal fue activado durante la ejecución, registrar como 'cancelled'
-        if (signal.cancelled) {
-            status = 'cancelled';
+        // Si el signal fue activado durante la ejecución, registrar como 'canceled'
+        if (signal.canceled) {
+            status = 'canceled';
         }
 
         // Registrar en historial — sanitizar result para no guardar arrays
@@ -272,14 +272,14 @@ function getStatus() {
  * Cancela un job por su ID.
  *
  * - Si está en la cola de espera: lo elimina y ajusta las posiciones.
- * - Si está en ejecución: activa signal.cancelled = true (graceful shutdown).
+ * - Si está en ejecución: activa signal.canceled = true (graceful shutdown).
  *   El handler lo detecta en su próxima iteración y corta el loop.
- *   El job será registrado como 'cancelled' en el finally de executeJob.
+ *   El job será registrado como 'canceled' en el finally de executeJob.
  * - Si ya está completado/fallido (en historial): retorna `{ alreadyDone: true, status }`.
  * - Si no existe: retorna `null`.
  *
  * @param {string} jobId
- * @returns {{ cancelled: boolean, wasQueued?: boolean, wasRunning?: boolean,
+ * @returns {{ canceled: boolean, wasQueued?: boolean, wasRunning?: boolean,
  *             alreadyDone?: boolean, status?: string } | null}
  */
 async function cancelJob(jobId) {
@@ -287,22 +287,22 @@ async function cancelJob(jobId) {
     const queueIndex = queue.findIndex((j) => j.id === jobId);
     if (queueIndex !== -1) {
         const [removed] = queue.splice(queueIndex, 1);
-        await logQueueEvent('job_cancelled_queued', { jobId, type: removed.type });
-        await notifyQueueStatus('cancelled', removed, { reason: 'cancelled_from_queue' });
-        return { cancelled: true, wasQueued: true };
+        await logQueueEvent('job_canceled_queued', { jobId, type: removed.type });
+        await notifyQueueStatus('canceled', removed, { reason: 'canceled_from_queue' });
+        return { canceled: true, wasQueued: true };
     }
 
     // 2. Verificar si está en ejecución — activar el signal
     if (runningJob && runningJob.id === jobId) {
-        runningJob.signal.cancelled = true;  // ← el handler lo verá en su próxima iteración
+        runningJob.signal.canceled = true;  // ← el handler lo verá en su próxima iteración
         await logQueueEvent('job_cancel_requested', { jobId, type: runningJob.type });
-        return { cancelled: true, wasRunning: true };
+        return { canceled: true, wasRunning: true };
     }
 
     // 3. Buscar en historial
     const historyEntry = history.find((h) => h.id === jobId);
     if (historyEntry) {
-        return { cancelled: false, alreadyDone: true, status: historyEntry.status };
+        return { canceled: false, alreadyDone: true, status: historyEntry.status };
     }
 
     // 4. No encontrado
@@ -313,20 +313,20 @@ async function cancelJob(jobId) {
  * Cancela todos los jobs pendientes de la cola.
  * El job en ejecución (si lo hay) NO se interrumpe.
  *
- * @returns {{ cancelledCount: number, queueSnapshot: object }}
+ * @returns {{ canceledCount: number, queueSnapshot: object }}
  */
 async function cancelAllJobs() {
-    const cancelledCount = queue.length;
-    const cancelledJobs = queue.splice(0, queue.length); // vaciar cola
+    const canceledCount = queue.length;
+    const canceledJobs = queue.splice(0, queue.length); // vaciar cola
 
-    await logQueueEvent('queue_purged', { cancelledCount });
+    await logQueueEvent('queue_purged', { canceledCount });
 
     // Notificar webhook por cada job cancelado (si tiene webhookUrl)
-    for (const job of cancelledJobs) {
-        await notifyQueueStatus('cancelled', job, { reason: 'queue_purged' });
+    for (const job of canceledJobs) {
+        await notifyQueueStatus('canceled', job, { reason: 'queue_purged' });
     }
 
-    return { cancelledCount, queueSnapshot: getQueueSnapshot() };
+    return { canceledCount, queueSnapshot: getQueueSnapshot() };
 }
 
 module.exports = {
