@@ -440,7 +440,119 @@ Content-Type: application/json
 
 ---
 
-### 5. Error Handling Global
+### 5. Cancelar Job por ID
+
+#### `DELETE /api/scraper/jobs/:jobId`
+
+Cancela un job específico de la cola. Si el job está pendiente, lo elimina inmediatamente. Si está en ejecución, le envía una señal de cancelación (graceful shutdown).
+
+**Path Parameters**
+| Parámetro | Tipo | Descripción |
+|-----------|------|-------------|
+| jobId | string | ID del job a cancelar (ej: `sitemapScraper-1746000000000-1`) |
+
+**Response 200 — Job pendiente cancelado**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "status": "cancelled",
+  "jobId": "sitemapScraper-1746000000000-1",
+  "message": "Job 'sitemapScraper-1746000000000-1' eliminado de la cola de espera.",
+  "cancelled": true,
+  "wasQueued": true
+}
+```
+
+**Response 200 — Job en ejecución (graceful shutdown)**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "status": "cancelled",
+  "jobId": "sitemapScraper-1746000000000-1",
+  "message": "Solicitud de cancelación enviada al job 'sitemapScraper-1746000000000-1' en ejecución. Finalizará al completar la operación actual.",
+  "cancelled": true,
+  "wasRunning": true
+}
+```
+
+**Response 400 — Job ya finalizado**
+```http
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "El job 'sitemapScraper-1746000000000-1' ya finalizó con estado 'completed' y no puede ser cancelado.",
+  "jobStatus": "completed"
+}
+```
+
+**Response 404 — Job no encontrado**
+```http
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+
+{
+  "status": "error",
+  "message": "Job 'sitemapScraper-1746000000000-1' no encontrado."
+}
+```
+
+---
+
+### 6. Purgar Cola (Cancelar Todos los Pendientes)
+
+#### `DELETE /api/scraper/jobs/all`
+
+Elimina todos los jobs pendientes de la cola. El job actualmente en ejecución **no** se ve afectado.
+
+**Response 200**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "status": "purged",
+  "message": "3 job(s) pendiente(s) eliminado(s) de la cola.",
+  "cancelledCount": 3,
+  "queueSnapshot": {
+    "isRunning": true,
+    "running": { "id": "categoryScraper-1746000000000-1", "type": "categoryScraper", "startedAt": "...", "elapsedMs": 45000 },
+    "pending": 0,
+    "pendingJobs": []
+  }
+}
+```
+
+---
+
+### 7. Estado de la Cola
+
+#### `GET /api/scraper/status`
+
+Retorna el estado actual de la cola de jobs: job en ejecución, jobs pendientes e historial reciente.
+
+**Response 200**
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "isRunning": true,
+  "running": { "id": "sitemapScraper-...", "type": "sitemapScraper", "startedAt": "...", "elapsedMs": 12000 },
+  "pending": 2,
+  "pendingJobs": [...],
+  "recentHistory": [...]
+}
+```
+
+---
+
+### 8. Error Handling Global
 
 #### 404 - Ruta No Encontrada
 ```http

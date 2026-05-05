@@ -1,259 +1,64 @@
 require('dotenv').config();
+const config = require('../config/config');
+const axios = require('axios');
 const cheerio = require('cheerio');
+const { wrapper } = require('axios-cookiejar-support');
+const tough = require('tough-cookie');
 const xml2js = require('xml2js');
 const https = require('https');
 const http = require('http');
 
-const config = require('../config/config');
-const RUBROS = require('../config/rubros');
 const logToFile = require('../utils/logToFile');
+const { processProductImage } = require('../utils/imageUploader');
 const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
-const {
-    client,
-    BASE_URL,
-    loginToOdoo,
-    extractProductIdFromUrl,
-    fetchProductDetailsFromAPI,
-    extractImageUrl,
-    processProductData,
-} = require('../utils/scraperUtils');
-
-/**
- * ============================================================
- * SCRAPER PRINCIPAL - FLUJO DE USO
- * ============================================================
- *
- * 1. ANÁLISIS DE SITEMAP (ejecutar primero, una sola vez o periódicamente):
- *    const { analyzeSitemap } = require('./scrapers/scraper');
- *    await analyzeSitemap();
- *
- *    → Descarga sitemap.xml y guarda categorías/productos/marcas en MongoDB
- *
- * 2. SCRAPERS (ejecutar después del análisis):
- *
- *    A) Category Scraper - Scrapea por categorías específicas:
- *       const { runCategoryScraper } = require('./scrapers/scraper');
- *       await runCategoryScraper({
- *           collection,
- *           categoryIds: 'all',  // o un ID específico
- *           enableLogs: true,
- *           useAutoDiscovery: true  // usa auto-discovery de páginas
- *       });
- *
- *    B) Sitemap Scraper - Scrapea todos los productos del sitemap:
- *       const { runSitemapScraper } = require('./scrapers/scraper');
- *       await runSitemapScraper({
- *           collection,
- *           limitProducts: 10,  // opcional
- *           enableLogs: true
- *       });
- *
- * ============================================================
- */
 
 // ============================================================
-// AUTO-DISCOVERY DE CATEGORÍAS
+// CONFIGURACIÓN Y CLIENTE HTTP
 // ============================================================
 
-/**
- * Auto-descubre categorías y sus páginas scrapeando el sitemap y las páginas de categorías.
- * Esto reemplaza la necesidad de tener RUBROS hardcodeado.
- *
- * @returns {Promise<Array>} Array de categorías con { id, name, slug, pages }
- */
-async function discoverCategories({ enableLogs = true } = {}) {
-    try {
-        // 1. Obtener categorías del sitemap (si existe)
-        const sitemapCollection = await getSitemapCollection();
-        let sitemapDoc = await sitemapCollection.findOne({});
+const BASE_URL = config.baseUrl;
+const ODOO_USER = config.odooUser;
+const ODOO_PASS = config.odooPass;
+const ODOO_DB = config.odooDb;
+const ENABLE_LOGS = process.env.ENABLE_LOGS === 'true';
 
-        // Si no existe, analizar sitemap primero
-        if (!sitemapDoc) {
-            await analyzeSitemap();
-            sitemapDoc = await sitemapCollection.findOne({});
-        }
+// Cuántos upserts se acumulan antes de hacer un bulkWrite a MongoDB.
+const BATCH_SIZE = 50;
 
-        if (!sitemapDoc || !sitemapDoc.categories) {
-            throw new Error('No se pudieron obtener categorías del sitemap');
-        }
-
-        const categories = sitemapDoc.categories;
-
-        // 2. Para cada categoría, descubrir cantidad de páginas
-        const categoriesWithPages = [];
-
-        for (const cat of categories) {
-            const pages = await detectCategoryPages(cat.id, cat.slug, enableLogs);
-
-            categoriesWithPages.push({
-                id: cat.id,
-                name: cat.name,
-                slug: cat.slug,
-                pages: pages,
-                products: cat.products || 0
-            });
-        }
-
-        // 3. Actualizar el documento del sitemap con las páginas descubiertas
-        await sitemapCollection.updateOne(
-            { source: sitemapDoc.source },
-            {
-                $set: {
-                    categories: categoriesWithPages,
-                    'summary.lastPageDiscovery': new Date()
-                }
-            }
-        );
-
-        // 4. También guardar en config para acceso rápido (backward compatibility)
-        const configCollection = await getConfigCollection();
-        await configCollection.updateOne(
-            { key: 'discoveredCategories' },
-            {
-                $set: {
-                    value: categoriesWithPages,
-                    updatedAt: new Date()
-                }
-            },
-            { upsert: true }
-        );
-
-        return categoriesWithPages;
-    } catch (error) {
-        log(`❌ Error en auto-discovery: ${error.message}`, enableLogs);
-        throw error;
-    }
-}
-
-/**
- * Detecta cuántas páginas tiene una categoría específica.
- * Estrategia optimizada: Ir a página 999, Odoo redirige a la última página automáticamente.
- *
- * @param {number} categoryId - ID de la categoría
- * @param {string} categorySlug - Slug de la categoría
- * @param {boolean} enableLogs - Habilitar logs
- * @returns {Promise<number>} Cantidad de páginas
- */
-async function detectCategoryPages(categoryId, categorySlug, enableLogs = true) {
-    try {
-        // Estrategia: Pedir página 999, Odoo nos lleva a la última automáticamente
-        const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/999`;
-
-        const response = await client.get(testUrl);
-        const finalUrl = response.request?.res?.responseUrl || testUrl;
-        const $ = cheerio.load(response.data);
-
-        // Verificar que hay productos (no es una categoría vacía)
-        const productsOnPage = $('form.oe_product_cart').length;
-
-        if (productsOnPage === 0) {
-            return 1; // Categoría vacía
-        }
-
-        // Verificar si existe paginación
-        const paginationExists = $('.pagination').length > 0;
-
-        if (!paginationExists) {
-            return 1;
-        }
-
-        // Estrategia 1: Buscar la página activa
-        const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
-        const activePageNum = parseInt(activePage);
-        if (!isNaN(activePageNum) && activePageNum > 0) {
-            return activePageNum;
-        }
-
-        // Estrategia 2: Extraer de hrefs
-        const pageNumbers = [];
-        $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
-            const href = $(el).attr('href');
-            const text = $(el).text().trim();
-
-            if (href) {
-                const match = href.match(/\/page\/(\d+)/);
-                if (match) {
-                    const pageNum = parseInt(match[1]);
-                    if (!isNaN(pageNum)) {
-                        pageNumbers.push(pageNum);
-                    }
-                }
-            }
-        });
-
-        if (pageNumbers.length > 0) {
-            const maxPage = Math.max(...pageNumbers);
-            return maxPage;
-        }
-
-        // Estrategia 3: Verificar estado de botones
-        const nextButtonDisabled = $('.pagination li.page-item.disabled .fa-chevron-right').length > 0;
-        const prevButtonExists = $('.pagination li.page-item:not(.disabled) .fa-chevron-left').length > 0;
-
-        if (nextButtonDisabled && !prevButtonExists) {
-            return 1;
-        }
-
-        return 1;
-    } catch (error) {
-        log(`⚠️ Error detectando páginas para categoría ${categoryId}: ${error.message}`, enableLogs);
-        return 1;
-    }
-}
-
-/**
- * Obtiene las categorías auto-descubiertas (o las descubre si no existen).
- *
- * @param {boolean} forceRefresh - Forzar re-discovery incluso si existen
- * @returns {Promise<Array>} Array de categorías
- */
-async function getDiscoveredCategories({ forceRefresh = false, enableLogs = true } = {}) {
-    const sitemapCollection = await getSitemapCollection();
-
-    if (!forceRefresh) {
-        // Primero intentar obtener del sitemap (fuente primaria)
-        const sitemapDoc = await sitemapCollection.findOne({});
-
-        if (sitemapDoc && sitemapDoc.categories && sitemapDoc.categories.length > 0) {
-            // Verificar si las categorías tienen información de páginas
-            const hasPageInfo = sitemapDoc.categories.some(cat => cat.pages !== undefined);
-
-            if (hasPageInfo) {
-                return sitemapDoc.categories;
-            }
-        }
-
-        // Fallback: intentar obtener de config
-        const configCollection = await getConfigCollection();
-        const cachedCategories = await configCollection.findOne({ key: 'discoveredCategories' });
-
-        if (cachedCategories && cachedCategories.value) {
-            return cachedCategories.value;
-        }
-    }
-
-    return await discoverCategories({ enableLogs });
-}
+const jar = new tough.CookieJar();
+const client = wrapper(axios.create({ jar, withCredentials: true }));
 
 // ============================================================
-// UTILS
+// UTILIDADES
 // ============================================================
 
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-function log(message, enableLogs = true) {
-    if (enableLogs) {
-        // console.log(message);
-        logToFile(message);
+function log(message) {
+    if (ENABLE_LOGS) {
+        console.log(message);
     }
 }
+
+function formatTime(ms) {
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+
+    if (hours > 0) return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
+
+
 
 async function fetchSitemap(url) {
     return new Promise((resolve, reject) => {
         const httpClient = url.startsWith('https') ? https : http;
         httpClient.get(url, (res) => {
             let data = '';
-            if (res.statusCode === 301 || res.statusCode === 302) {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 return fetchSitemap(res.headers.location).then(resolve).catch(reject);
             }
             if (res.statusCode !== 200) {
@@ -266,15 +71,106 @@ async function fetchSitemap(url) {
 }
 
 // ============================================================
-// ANALIZADOR DE SITEMAP
+// AUTENTICACIÓN ODOO
+// ============================================================
+
+async function loginToOdoo() {
+    try {
+        const res = await client.post(`${BASE_URL}/web/session/authenticate`, {
+            jsonrpc: '2.0',
+            method: 'call',
+            params: { db: ODOO_DB, login: ODOO_USER, password: ODOO_PASS },
+        });
+        if (res.data.result?.uid) return true;
+        log('❌ Falló el login.');
+        return false;
+    } catch (err) {
+        log(`❌ Error durante login: ${err.message}`);
+        return false;
+    }
+}
+
+// ============================================================
+// EXTRACCIÓN DE DATOS DE PRODUCTOS
+// ============================================================
+
+function extractProductIdFromUrl(url) {
+    const urlMatch = url.match(/\/shop\/(\d+)-/);
+    return urlMatch && urlMatch[1] ? urlMatch[1] : null;
+}
+
+async function fetchProductDetailsFromAPI({ product_id, product_template_id, refererUrl }) {
+    try {
+        const response = await client.post(
+            `${BASE_URL}/website_sale/get_combination_info`,
+            {
+                id: 3,
+                jsonrpc: '2.0',
+                method: 'call',
+                params: {
+                    product_template_id,
+                    product_id,
+                    combination: [],
+                    add_qty: 1,
+                    parent_combination: [],
+                },
+            },
+            { headers: { 'Content-Type': 'application/json', Referer: refererUrl } }
+        );
+        return response.data.result;
+    } catch (error) {
+        log(`❌ Error API detalles product_id ${product_id}: ${error.message}`);
+        return null;
+    }
+}
+
+function extractImageUrl(carouselHtml) {
+    if (!carouselHtml) return null;
+    const $ = cheerio.load(carouselHtml);
+    const imgSrc = $('img').attr('src');
+    return imgSrc ? `${BASE_URL}${imgSrc}` : null;
+}
+
+function extractBrand(displayName) {
+    const brandMatch = displayName.match(/"([^"]+)"$/);
+    return brandMatch ? brandMatch[1].trim() : 'generico';
+}
+
+async function processProductData({ customProductId, productApiData, imageUrl, categoryId, categoryName, profitMargin, sourceUrl, brand, existingImageUrl }) {
+    try {
+        const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
+        const productBrand = brand || extractBrand(productApiData.display_name);
+        const finalPrice = productApiData.list_price * (1 + profitMargin);
+
+        const productData = {
+            product_id: customProductId,
+            display_name: productApiData.display_name,
+            final_price: finalPrice,
+            list_price: productApiData.list_price,
+            base_unit_name: productApiData.base_unit_name,
+            image_url: cloudinaryImageUrl,
+            original_image_url: imageUrl,
+            product_type: productApiData.product_type,
+            category_id: categoryId,
+            category_name: categoryName,
+            brand: productBrand,
+        };
+
+        if (sourceUrl) productData.source_url = sourceUrl;
+        return productData;
+    } catch (error) {
+        log(`❌ Error procesando datos ${customProductId}: ${error.message}`);
+        return null;
+    }
+}
+
+// ============================================================
+// ANÁLISIS DE SITEMAP
 // ============================================================
 
 async function analyzeSitemap() {
     const sitemapUrl = process.env.SITEMAP_URL;
-
-    if (!sitemapUrl) {
-        throw new Error('Falta variable de entorno: SITEMAP_URL');
-    }
+    if (!sitemapUrl) throw new Error('Falta variable de entorno: SITEMAP_URL');
 
     try {
         let content = await fetchSitemap(sitemapUrl);
@@ -284,89 +180,72 @@ async function analyzeSitemap() {
         const result = await parser.parseStringPromise(content);
         const urls = result.urlset.url.map(url => url.loc[0].trim());
 
-        const products = [];
-        const brands = [];
-        const categoriesData = {};
-        const brandsData = {};
-        const productsByCategory = {};
-        const productsByBrand = {};
+        const products = [], brands = [];
+        const categoriesData = {}, brandsData = {};
+        const productsByCategory = {}, productsByBrand = {};
 
         const productPattern = /\/shop\/[A-Za-z0-9\-]+/i;
         const brandPattern = /\/shop\/category\/por-marca-?([A-Za-z0-9\-]*)/i;
         const categoryPattern = /\/shop\/category\/por-rubro-([A-Za-z0-9\-]+)/i;
 
         for (const url of urls) {
-            if (
-                url.includes('/shop/') &&
-                !url.includes('/shop/category/') &&
-                !url.replace(/\/$/, '').endsWith('/shop') &&
-                productPattern.test(url)
-            ) {
+            if (url.includes('/shop/') && !url.includes('/shop/category/') && productPattern.test(url)) {
                 products.push(url);
-                try {
-                    const slug = url.split('/shop/')[1];
-                    const matchCategoryProduct = slug.match(/^([A-Za-z\-]+)-\d+/);
-                    if (matchCategoryProduct) {
-                        const categoryName = matchCategoryProduct[1];
-                        productsByCategory[categoryName] = (productsByCategory[categoryName] || 0) + 1;
-                    }
-                } catch (_) {}
-                for (const brandSlug in brandsData) {
-                    if (url.includes(brandSlug)) {
-                        productsByBrand[brandSlug] = (productsByBrand[brandSlug] || 0) + 1;
-                    }
+                const slug = url.split('/shop/')[1];
+                const matchCategory = slug.match(/^([A-Za-z\-]+)-\d+/);
+                if (matchCategory) {
+                    const cName = matchCategory[1];
+                    productsByCategory[cName] = (productsByCategory[cName] || 0) + 1;
+                }
+                for (const bSlug in brandsData) {
+                    if (url.includes(bSlug)) productsByBrand[bSlug] = (productsByBrand[bSlug] || 0) + 1;
                 }
             } else if (brandPattern.test(url)) {
                 const match = url.match(brandPattern);
                 const brandSlug = match[1];
-                if (!brandSlug) continue;
-
-                const parts = brandSlug.split('-');
-                let brandId = null;
-                let brandName = brandSlug;
-
-                if (parts.length > 1 && !isNaN(parts[parts.length - 1])) {
-                    brandId = parseInt(parts[parts.length - 1]);
-                    brandName = parts.slice(0, -1).join('-');
+                if (brandSlug) {
+                    const parts = brandSlug.split('-');
+                    let bId = null, bName = brandSlug;
+                    if (parts.length > 1 && !isNaN(parts[parts.length - 1])) {
+                        bId = parseInt(parts[parts.length - 1]);
+                        bName = parts.slice(0, -1).join('-');
+                    }
+                    brandsData[bName] = bId;
+                    brands.push(url);
                 }
-
-                brandsData[brandName] = brandId;
-                brands.push(url);
             } else if (categoryPattern.test(url)) {
                 const match = url.match(categoryPattern);
-                const categorySlug = match[1];
-                if (!isNaN(categorySlug)) continue;
+                const catSlug = match[1];
+                if (!isNaN(catSlug)) continue;
 
-                const parts = categorySlug.split('-');
-                let categoryId = null;
-                let categoryName = categorySlug;
-
+                const parts = catSlug.split('-');
+                let cId = null, cName = catSlug;
                 if (parts.length > 1 && !isNaN(parts[parts.length - 1])) {
-                    categoryId = parseInt(parts[parts.length - 1]);
-                    categoryName = parts.slice(0, -1).join('-');
+                    cId = parseInt(parts[parts.length - 1]);
+                    cName = parts.slice(0, -1).join('-');
                 }
-
-                categoriesData[categoryName] = categoryId;
+                categoriesData[cName] = cId;
             }
         }
 
-        const sortedCategories = Object.entries(categoriesData).sort((a, b) => (a[1] || 0) - (b[1] || 0));
-        const sortedBrands = Object.entries(brandsData).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+        const categoriesArray = Object.entries(categoriesData)
+            .sort((a, b) => (a[1] || 0) - (b[1] || 0))
+            .map(([name, id]) => ({
+                id,
+                name: name.split('-').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('/'),
+                slug: name,
+                products: productsByCategory[name] || 0,
+            }));
 
-        const categoriesArray = sortedCategories.map(([name, id]) => ({
-            id,
-            name: name.split('-').map(p => p.charAt(0).toUpperCase() + p.slice(1)).join('/'),
-            slug: name,
-            products: productsByCategory[name] || 0,
-            // pages será agregado por discoverCategories si se ejecuta
-        }));
-
-        const brandsArray = sortedBrands.map(([name, id]) => ({
-            id,
-            name,
-            products: productsByBrand[name] || 0,
-            urls: brands.filter(url => url.includes(name))
-        }));
+        const brandsArray = Object.entries(brandsData)
+            .sort((a, b) => (a[1] || 0) - (b[1] || 0))
+            .map(([slug, id]) => ({
+                id,
+                slug,
+                name: slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' '),
+                products: productsByBrand[slug] || 0,
+                urls: brands.filter(u => u.includes(slug))
+            }));
 
         const catalogDocument = {
             source: sitemapUrl,
@@ -382,62 +261,165 @@ async function analyzeSitemap() {
             brandUrls: brands,
         };
 
-        // Usar la función de mongo.js
         const sitemapCollection = await getSitemapCollection();
-        await sitemapCollection.replaceOne(
-            { source: sitemapUrl },
-            catalogDocument,
-            { upsert: true }
-        );
+        await sitemapCollection.replaceOne({ source: sitemapUrl }, catalogDocument, { upsert: true });
 
         return catalogDocument;
     } catch (error) {
-        log(`❌ Error analizando sitemap: ${error.message}`, true);
+        log(`❌ Error analizando sitemap: ${error.message}`);
         throw error;
     }
 }
 
 // ============================================================
-// ESTRATEGIAS
+// AUTO-DISCOVERY DE CATEGORÍAS
+// ============================================================
+
+async function detectCategoryPages(categoryId, categorySlug) {
+    try {
+        const testUrl = `${BASE_URL}/shop/category/por-rubro-${categorySlug}-${categoryId}/page/999`;
+        const response = await client.get(testUrl);
+        const $ = cheerio.load(response.data);
+
+        if ($('form.oe_product_cart').length === 0) return 1;
+        if ($('.pagination').length === 0) return 1;
+
+        const activePage = $('.pagination li.page-item.active a.page-link').text().trim();
+        const activePageNum = parseInt(activePage);
+        if (!isNaN(activePageNum) && activePageNum > 0) return activePageNum;
+
+        const pageNumbers = [];
+        $('.pagination li.page-item:not(.disabled) a.page-link').each((_, el) => {
+            const match = $(el).attr('href')?.match(/\/page\/(\d+)/);
+            if (match) pageNumbers.push(parseInt(match[1]));
+        });
+
+        return pageNumbers.length ? Math.max(...pageNumbers) : 1;
+    } catch (error) {
+        log(`⚠️ Error detectando páginas cat ${categoryId}: ${error.message}`);
+        return 1;
+    }
+}
+
+async function discoverCategories() {
+    try {
+        const sitemapCollection = await getSitemapCollection();
+        let sitemapDoc = await sitemapCollection.findOne({});
+        if (!sitemapDoc) sitemapDoc = await analyzeSitemap();
+
+        const categoriesWithPages = [];
+        for (const cat of sitemapDoc.categories) {
+            const pages = await detectCategoryPages(cat.id, cat.slug);
+            categoriesWithPages.push({ ...cat, pages });
+        }
+
+        await sitemapCollection.updateOne(
+            { source: sitemapDoc.source },
+            { $set: { categories: categoriesWithPages, 'summary.lastPageDiscovery': new Date() } }
+        );
+        const configCollection = await getConfigCollection();
+        await configCollection.updateOne(
+            { key: 'discoveredCategories' },
+            { $set: { value: categoriesWithPages, updatedAt: new Date() } },
+            { upsert: true }
+        );
+
+        return categoriesWithPages;
+    } catch (error) {
+        log(`❌ Error en auto-discovery: ${error.message}`);
+        throw error;
+    }
+}
+
+async function getDiscoveredCategories({ forceRefresh = false } = {}) {
+    if (!forceRefresh) {
+        const configCollection = await getConfigCollection();
+        const cached = await configCollection.findOne({ key: 'discoveredCategories' });
+        if (cached?.value) return cached.value;
+    }
+    return await discoverCategories();
+}
+
+// ============================================================
+// ESTRATEGIAS DE SCRAPING
 // ============================================================
 
 class CategoryProductStrategy {
-    constructor({ categoryIds = 'all', useAutoDiscovery = true, enableLogs = true } = {}) {
+    constructor({ categoryIds = 'all', useAutoDiscovery = true } = {}) {
         this.categoryIds = categoryIds;
         this.useAutoDiscovery = useAutoDiscovery;
-        this.enableLogs = enableLogs;
+        this.brandsCache = null;
+    }
+
+    async _loadBrands() {
+        if (this.brandsCache) return this.brandsCache;
+        try {
+            const sitemapCollection = await getSitemapCollection();
+            const sitemapDoc = await sitemapCollection.findOne({});
+
+            if (sitemapDoc?.brands) {
+                this.brandsCache = sitemapDoc.brands
+                    .filter(b => b.name && b.id !== null)
+                    .map(b => ({ name: b.name, slug: b.slug, id: b.id }))
+                    .sort((a, b) => b.name.length - a.name.length);
+                log(`✅ Cargadas ${this.brandsCache.length} marcas para matching`);
+            } else {
+                this.brandsCache = [];
+            }
+        } catch (error) {
+            log(`⚠️ Error cargando marcas: ${error.message}`);
+            this.brandsCache = [];
+        }
+        return this.brandsCache;
+    }
+
+    _extractBrandFromProductName(productName) {
+        if (!productName || !this.brandsCache?.length) return null;
+        const normalizedName = productName.toLowerCase().trim();
+
+        for (const brand of this.brandsCache) {
+            const regex = new RegExp(`\\b${brand.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            if (regex.test(normalizedName)) return brand.name;
+        }
+        return null;
     }
 
     async getProductList() {
-        let rubros;
+        await this._loadBrands();
 
-        if (this.useAutoDiscovery) {
-            const discoveredCategories = await getDiscoveredCategories({ enableLogs: this.enableLogs });
+        const allRubros = this.useAutoDiscovery
+            ? await getDiscoveredCategories()
+            : require('../config/rubros');
 
-            rubros = this.categoryIds === 'all'
-                ? discoveredCategories
-                : discoveredCategories.filter(r => r.id === parseInt(this.categoryIds));
+        let rubrosToProcess = [];
+        const isAll = !this.categoryIds || this.categoryIds === 'all';
+
+        if (isAll) {
+            rubrosToProcess = allRubros;
         } else {
-            rubros = this.categoryIds === 'all'
-                ? RUBROS
-                : RUBROS.filter(r => r.id === parseInt(this.categoryIds));
+            const idsInput = Array.isArray(this.categoryIds) ? this.categoryIds : [this.categoryIds];
+            const targetIds = idsInput.map(id => parseInt(id)).filter(id => !isNaN(id));
+            rubrosToProcess = allRubros.filter(r => targetIds.includes(r.id));
         }
 
-        if (!rubros.length) throw new Error('No se encontró ningún rubro válido.');
+        if (!rubrosToProcess.length) {
+            throw new Error(`No se encontraron rubros válidos para los IDs proporcionados: ${JSON.stringify(this.categoryIds)}`);
+        }
+
+        log(`📋 Estrategia Category: Procesando ${rubrosToProcess.length} rubros.`);
 
         const productList = [];
-
-        for (const rubro of rubros) {
+        for (const rubro of rubrosToProcess) {
             for (let page = 1; page <= rubro.pages; page++) {
-
                 const products = await this._fetchProducts(rubro.id, page, rubro.slug);
-                for (const p of products) {
+                products.forEach(p => {
                     productList.push({
                         ...p,
                         categoryId: rubro.id,
                         categoryName: rubro.name,
+                        brand: p.brand || null
                     });
-                }
+                });
             }
         }
 
@@ -445,37 +427,56 @@ class CategoryProductStrategy {
     }
 
     async _fetchProducts(categoryId, page, slug = null) {
-        // Construir URL usando slug si está disponible, sino usar el formato antiguo
-        const urlPart = slug
-            ? `por-rubro-${slug}-${categoryId}`
-            : `por-rubro-xxx-${categoryId}`;
-
+        const urlPart = slug ? `por-rubro-${slug}-${categoryId}` : `por-rubro-xxx-${categoryId}`;
         const url = `${BASE_URL}/shop/category/${urlPart}/page/${page}`;
 
         try {
             const res = await client.get(url);
             const $ = cheerio.load(res.data);
-            return $('form.oe_product_cart').map((_, el) => ({
-                product_id: Number($(el).find("input[name='product_id']").val()),
-                product_template_id: Number($(el).find("input[name='product_template_id']").val()),
-            })).get().filter(p => p.product_id && p.product_template_id);
+
+            return $('form.oe_product_cart').map((_, el) => {
+                const $form = $(el);
+                const productId = $form.find("input[name='product_id']").val();
+                const productTemplateId = $form.find("input[name='product_template_id']").val();
+
+                let productName = null;
+                const nameSelectors = ['.o_wsale_product_name', 'h6.card-title', '.product-name', 'h6'];
+
+                const container = $form.closest('.oe_product, .o_wsale_product_grid_wrapper');
+                for (const selector of nameSelectors) {
+                    if (container.find(selector).length) {
+                        productName = container.find(selector).text().trim();
+                        break;
+                    }
+                }
+
+                return {
+                    product_id: productId,
+                    product_template_id: productTemplateId,
+                    brand: this._extractBrandFromProductName(productName),
+                    display_name: productName
+                };
+            }).get().filter(p => p.product_id && p.product_template_id);
+
         } catch (error) {
-            log(`❌ Error en rubro ${categoryId}, página ${page}: ${error.message}`, this.enableLogs);
+            log(`❌ Error en rubro ${categoryId}, página ${page}: ${error.message}`);
             return [];
         }
     }
 
     getName() {
-        const mode = this.useAutoDiscovery ? 'Auto-discovery' : 'Manual';
-        return `Category Scraper [${mode}] (${this.categoryIds === 'all' ? 'Todas' : `ID ${this.categoryIds}`})`;
+        const mode = this.useAutoDiscovery ? 'Auto' : 'Manual';
+        const scope = (!this.categoryIds || this.categoryIds === 'all')
+            ? 'Todas'
+            : `IDs: ${Array.isArray(this.categoryIds) ? this.categoryIds.join(',') : this.categoryIds}`;
+        return `Category Scraper [${mode}] (${scope})`;
     }
 }
 
 class SitemapProductStrategy {
-    constructor({ sitemapSource = null, limitProducts = null, enableLogs = true } = {}) {
+    constructor({ sitemapSource = null, limitProducts = null } = {}) {
         this.sitemapSource = sitemapSource;
         this.limitProducts = limitProducts;
-        this.enableLogs = enableLogs;
         this.categoriesMap = null;
     }
 
@@ -484,60 +485,34 @@ class SitemapProductStrategy {
         const query = this.sitemapSource ? { source: this.sitemapSource } : {};
         let sitemapDoc = await sitemapCollection.findOne(query);
 
-        // Si no existe el documento, analizar sitemap automáticamente
         if (!sitemapDoc) {
-            try {
-                await analyzeSitemap();
-                sitemapDoc = await sitemapCollection.findOne(query);
-
-                if (!sitemapDoc) {
-                    throw new Error('No se pudo crear el documento de sitemap después del análisis');
-                }
-            } catch (error) {
-                throw new Error(`Error al analizar sitemap: ${error.message}`);
-            }
+            await analyzeSitemap();
+            sitemapDoc = await sitemapCollection.findOne(query);
+            if (!sitemapDoc) throw new Error('No se pudo obtener sitemap tras análisis.');
         }
 
         const urls = sitemapDoc.productUrls || [];
-        if (!urls.length) throw new Error('No se encontraron URLs de productos.');
+        if (!urls.length) throw new Error('No se encontraron URLs de productos en sitemap.');
 
-        // Crear un mapa de categorías por slug para hacer matching
         this.categoriesMap = {};
-        if (sitemapDoc.categories && Array.isArray(sitemapDoc.categories)) {
+        if (Array.isArray(sitemapDoc.categories)) {
             sitemapDoc.categories.forEach(cat => {
-                if (cat.slug) {
-                    this.categoriesMap[cat.slug] = {
-                        id: cat.id,
-                        name: cat.name
-                    };
-                }
+                if (cat.slug) this.categoriesMap[cat.slug] = { id: cat.id, name: cat.name };
             });
         }
 
         const selectedUrls = this.limitProducts ? urls.slice(0, this.limitProducts) : urls;
 
-        const productList = selectedUrls.map(url => {
+        return selectedUrls.map(url => {
             const templateMatch = url.match(/-(\d+)$/);
-            const categoryMatch = url.match(/\?category=(\d+)/);
-
-            // Intentar extraer categoría del slug del producto
             const slugMatch = url.match(/\/shop\/\d+-([a-z\-]+)/);
-            let categoryId = categoryMatch ? parseInt(categoryMatch[1]) : null;
-            let categoryName = null;
 
-            // Si tenemos un slug, buscar en el mapa de categorías
-            if (slugMatch && slugMatch[1] && this.categoriesMap) {
+            let categoryId = null, categoryName = null;
+
+            if (slugMatch?.[1] && this.categoriesMap) {
                 const productSlugParts = slugMatch[1].split('-');
-
-                // Intentar matchear con categorías conocidas
                 for (const catSlug in this.categoriesMap) {
-                    const catSlugParts = catSlug.split('-');
-                    const matchCount = catSlugParts.filter(part =>
-                        productSlugParts.includes(part)
-                    ).length;
-
-                    // Si hay match significativo
-                    if (matchCount > 0) {
+                    if (catSlug.split('-').some(part => productSlugParts.includes(part))) {
                         categoryId = this.categoriesMap[catSlug].id;
                         categoryName = this.categoriesMap[catSlug].name;
                         break;
@@ -547,18 +522,15 @@ class SitemapProductStrategy {
 
             return {
                 product_template_id: templateMatch ? Number(templateMatch[1]) : null,
-                product_id: null,
                 sourceUrl: url,
-                categoryId: categoryId,
-                categoryName: categoryName,
+                categoryId,
+                categoryName,
             };
         }).filter(p => p.product_template_id);
-
-        return productList;
     }
 
     getName() {
-        return `Sitemap Scraper${this.limitProducts ? ` (${this.limitProducts} productos)` : ''}`;
+        return `Sitemap Scraper${this.limitProducts ? ` (Limit: ${this.limitProducts})` : ''}`;
     }
 }
 
@@ -567,47 +539,150 @@ class SitemapProductStrategy {
 // ============================================================
 
 class ScraperRunner {
-    constructor({ strategy, collection, pageDelay, categoryDelay, enableLogs = true }) {
+    constructor({ strategy, collection, pageDelay, categoryDelay, signal }) {
         this.strategy = strategy;
         this.collection = collection;
         this.pageDelay = pageDelay || config.pageDelay;
-        this.categoryDelay = categoryDelay || config.categoryDelay;
-        this.enableLogs = enableLogs;
         this.profitMargin = 1;
+        this.existingImagesMap = new Map();
+        // signal: objeto { cancelled: false } compartido con scraperQueue.
+        // cancelJob() lo muta a { cancelled: true } para interrumpir el loop.
+        this.signal = signal ?? null;
     }
 
     async initialize() {
         if (!await loginToOdoo()) throw new Error('Login fallido a Odoo.');
+
         const configCollection = await getConfigCollection();
         const profitDoc = await configCollection.findOne({ key: 'profitMargin' });
         this.profitMargin = profitDoc ? profitDoc.value / 100 : 1;
+
+        log('🗄️  Cargando imágenes existentes desde la DB...');
+        const existing = await this.collection
+            .find({}, { projection: { product_id: 1, image_url: 1 } })
+            .toArray();
+        existing.forEach(p => {
+            if (p.product_id) this.existingImagesMap.set(String(p.product_id), p.image_url || null);
+        });
+        log(`✅ ${this.existingImagesMap.size} productos existentes cargados en memoria.`);
     }
 
     async run() {
+        const startTime = Date.now();
         await this.initialize();
+
         const products = await this.strategy.getProductList();
-        let total = 0, uploaded = 0, errors = 0;
+        let total = 0, uploaded = 0, errors = 0, orphansDeleted = 0;
+
+        log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
+
+        let batch = [];
+        const scrapedIds = new Set();
 
         for (let i = 0; i < products.length; i++) {
+
+            // ── Chequeo de cancelación ──────────────────────────────────
+            // Si cancelJob() activó el signal, hacer flush del batch parcial
+            // y salir del loop limpiamente antes de procesar el siguiente producto.
+            if (this.signal?.cancelled) {
+                log('\n🛑 Cancelación solicitada — deteniendo scraper.');
+                if (batch.length > 0) {
+                    await this.collection.bulkWrite(batch, { ordered: false });
+                    total += batch.length;
+                    log(`💾 Flush parcial: ${batch.length} productos guardados antes de cancelar.`);
+                    batch = [];
+                }
+                break;
+            }
+            // ────────────────────────────────────────────────────────────
+
             const product = products[i];
 
             const details = await this._fetchAndProcessProduct(product);
+
             if (details) {
-                await this.collection.updateOne(
-                    { product_id: details.product_id },
-                    { $set: details },
-                    { upsert: true }
-                );
-                total++;
+                scrapedIds.add(String(details.product_id));
+
+                batch.push({
+                    updateOne: {
+                        filter: { product_id: details.product_id },
+                        update: { $set: details },
+                        upsert: true,
+                    }
+                });
+
                 if (details.image_url?.includes('cloudinary.com')) uploaded++;
+
+                this.existingImagesMap.set(String(details.product_id), details.image_url);
             } else {
                 errors++;
+            }
+
+            // Flush: cuando el batch está lleno, o al llegar al último producto.
+            const isLast = i === products.length - 1;
+            if (batch.length >= BATCH_SIZE || (isLast && batch.length > 0)) {
+                await this.collection.bulkWrite(batch, { ordered: false });
+                total += batch.length;
+                log(`💾 Batch guardado: ${total}/${products.length} productos.`);
+                batch = [];
             }
 
             await delay(this.pageDelay);
         }
 
-        return { total, errors, uploaded, processed: products.length };
+        // ── Limpieza de huérfanos ──────────────────────────────────────────
+        // Solo se ejecuta en corridas completas (categoryIds === 'all') y cuando
+        // el scraper NO fue cancelado (una corrida cancelada es parcial por definición).
+        const isFullRun = !this.strategy.categoryIds || this.strategy.categoryIds === 'all';
+        const wasCancelled = this.signal?.cancelled ?? false;
+
+        if (isFullRun && !wasCancelled) {
+            const orphanIds = [...this.existingImagesMap.keys()].filter(id => !scrapedIds.has(id));
+
+            if (orphanIds.length) {
+                log(`🧹 Eliminando ${orphanIds.length} productos huérfanos (presentes en DB pero ausentes en Odoo)...`);
+                await this.collection.deleteMany({ product_id: { $in: orphanIds } });
+                orphansDeleted = orphanIds.length;
+                log(`✅ ${orphansDeleted} huérfanos eliminados.`);
+            } else {
+                log('✅ Sin productos huérfanos. DB sincronizada con Odoo.');
+            }
+        } else if (wasCancelled) {
+            log('⚠️  Corrida cancelada: limpieza de huérfanos omitida.');
+        } else {
+            log('⚠️  Corrida parcial: limpieza de huérfanos omitida para evitar falsos positivos.');
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
+        const endTime = Date.now();
+        const totalTime = endTime - startTime;
+
+        const logData = {
+            type: 'scraper_execution',
+            strategy: this.strategy.getName(),
+            timestamp: new Date(),
+            stats: {
+                productsProcessed: products.length,
+                savedSuccessfully: total,
+                imagesUploaded: uploaded,
+                errors: errors,
+                orphansDeleted: orphansDeleted,
+                cancelled: wasCancelled,
+                duration: totalTime,
+                durationFormatted: formatTime(totalTime)
+            }
+        };
+
+        await logToFile(logData);
+
+        if (ENABLE_LOGS) {
+            console.log('\n' + '='.repeat(60));
+            console.log(wasCancelled ? '🛑 SCRAPER CANCELADO' : '✅ SCRAPER FINALIZADO');
+            console.log(`📊 Stats: ${total} OK | ${errors} Errores | ${uploaded} Imágenes | 🧹 ${orphansDeleted} Huérfanos | ${formatTime(totalTime)}`);
+            console.log('='.repeat(60) + '\n');
+        }
+
+        return { total, errors, uploaded, orphansDeleted, processed: products.length, duration: totalTime };
     }
 
     async _fetchAndProcessProduct(product) {
@@ -615,15 +690,15 @@ class ScraperRunner {
             const productUrl = `${BASE_URL}/shop/${product.product_template_id}`;
             const response = await client.get(productUrl);
             const finalUrl = response.request.res.responseUrl;
+
             const customId = extractProductIdFromUrl(finalUrl);
             if (!customId) return null;
 
             let productId = product.product_id;
             if (!productId) {
-                const $ = cheerio.load(response.data);
-                productId = Number($("input[name='product_id']").val());
-                if (!productId) return null;
+                productId = cheerio.load(response.data)("input[name='product_id']").val();
             }
+            if (!productId) return null;
 
             const apiData = await fetchProductDetailsFromAPI({
                 product_id: productId,
@@ -633,54 +708,33 @@ class ScraperRunner {
 
             if (!apiData) return null;
 
-            const imageUrl = extractImageUrl(apiData.carousel);
-            const productData = await processProductData({
+            const existingImageUrl = this.existingImagesMap.get(String(customId)) ?? null;
+
+            return await processProductData({
                 customProductId: customId,
                 productApiData: apiData,
-                imageUrl,
+                imageUrl: extractImageUrl(apiData.carousel),
                 categoryId: product.categoryId,
                 categoryName: product.categoryName,
                 profitMargin: this.profitMargin,
-                collection: this.collection,
                 sourceUrl: product.sourceUrl,
+                brand: product.brand || null,
+                existingImageUrl,
             });
-
-            return productData;
         } catch (err) {
-            log(`❌ Error detalle ${product.product_template_id}: ${err.message}`, this.enableLogs);
+            log(`❌ Error detalle ${product.product_template_id}: ${err.message}`);
             return null;
         }
     }
 }
 
 // ============================================================
-// FUNCIONES PÚBLICAS
+// EXPORTS
 // ============================================================
 
-async function runCategoryScraper(options) {
-    const strategy = new CategoryProductStrategy(options);
-    const runner = new ScraperRunner({ ...options, strategy });
-    return runner.run();
-}
-
-async function runSitemapScraper(options) {
-    const strategy = new SitemapProductStrategy(options);
-    const runner = new ScraperRunner({ ...options, strategy });
-    return runner.run();
-}
-
 module.exports = {
-    // Análisis
-    analyzeSitemap,
-    discoverCategories,
-    getDiscoveredCategories,
-
-    // Scrapers
-    runCategoryScraper,
-    runSitemapScraper,
-
-    // Clases (por si se necesitan para extensión)
-    CategoryProductStrategy,
-    SitemapProductStrategy,
-    ScraperRunner,
+    client, BASE_URL, loginToOdoo, analyzeSitemap, discoverCategories, getDiscoveredCategories,
+    runCategoryScraper: async (opts) => new ScraperRunner({ ...opts, strategy: new CategoryProductStrategy(opts) }).run(),
+    runSitemapScraper:  async (opts) => new ScraperRunner({ ...opts, strategy: new SitemapProductStrategy(opts) }).run(),
+    CategoryProductStrategy, SitemapProductStrategy, ScraperRunner
 };

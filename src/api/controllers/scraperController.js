@@ -1,29 +1,53 @@
 const ScraperService = require('../services/scraperService');
+const { getStatus, cancelJob, cancelAllJobs } = require('../services/scraperQueue');
 const logToFile = require('../../utils/logToFile');
+
+// ──────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Construye la respuesta 202 enriquecida con info de la cola.
+ * Si el job fue encolado informa posición y cuántos están en espera.
+ */
+function buildAcceptedResponse(enqueueResult, scraperName) {
+    const { jobId, queued, position, queueSnapshot } = enqueueResult;
+
+    if (queued) {
+        return {
+            status: 'queued',
+            jobId,
+            message: `Hay un scraper en ejecución. ${scraperName} fue encolado en posición ${position}. Jobs en espera: ${queueSnapshot.pending}.`,
+            queue: {
+                pending: queueSnapshot.pending,
+                position,
+                running: queueSnapshot.running,
+            },
+        };
+    }
+
+    return {
+        status: 'accepted',
+        jobId,
+        message: `${scraperName} iniciado.`,
+        queue: {
+            pending: 0,
+            position: 0,
+            running: queueSnapshot.running,
+        },
+    };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CONTROLLERS
+// ──────────────────────────────────────────────────────────────────────────
 
 const sitemapScraperController = async (req, res) => {
     try {
-        const {
-            sitemapSource,
-            limitProducts,
-            pageDelay,
-            webhookUrl
-        } = req.body;
-
+        const { sitemapSource, limitProducts, pageDelay, webhookUrl } = req.body;
         const collection = req.collection;
 
-        res.status(202).json({ status: 'accepted', message: 'Sitemap scraper started' });
-
-        // Log del inicio del proceso
-        await logToFile.info('Iniciando sitemap scraper', 'controller', {
-            sitemapSource,
-            limitProducts,
-            pageDelay,
-            webhookUrl: !!webhookUrl,
-            collection: collection.collectionName
-        });
-
-        const result = await ScraperService.sitemapScraper({
+        const enqueueResult = await ScraperService.sitemapScraper({
             sitemapSource,
             limitProducts,
             pageDelay,
@@ -31,23 +55,22 @@ const sitemapScraperController = async (req, res) => {
             collection,
         });
 
-        // Log del resultado exitoso
-        await logToFile.info('Sitemap scraper finalizado exitosamente', 'controller', {
-            total: result.total,
-            errors: result.errors,
-            uploaded: result.uploaded,
-            processed: result.processed,
-            successRate: ((result.total / result.processed) * 100).toFixed(2) + '%'
+        const body = buildAcceptedResponse(enqueueResult, 'Sitemap scraper');
+        res.status(202).json(body);
+
+        await logToFile.info('Sitemap scraper encolado/iniciado', 'controller', {
+            jobId: enqueueResult.jobId,
+            queued: enqueueResult.queued,
+            position: enqueueResult.position,
+            sitemapSource,
+            limitProducts,
+            pageDelay,
+            webhookUrl: !!webhookUrl,
+            collection: collection.collectionName,
         });
 
     } catch (error) {
-        // Log del error
-        console.error('Error en sitemapScraperController', 'controller', {
-            error: error.message,
-            stack: error.stack,
-            body: req.body
-        });
-
+        console.error('Error en sitemapScraperController', { error: error.message, stack: error.stack, body: req.body });
         if (!res.headersSent) {
             res.status(500).json({ status: 'error', message: error.message });
         }
@@ -56,27 +79,10 @@ const sitemapScraperController = async (req, res) => {
 
 const categoryScraperController = async (req, res) => {
     try {
-        const {
-            categoryIds,
-            pageDelay,
-            categoryDelay,
-            webhookUrl
-        } = req.body;
-
+        const { categoryIds, pageDelay, categoryDelay, webhookUrl } = req.body;
         const collection = req.collection;
 
-        res.status(202).json({ status: 'accepted', message: 'Category scraper started' });
-
-        // Log del inicio del proceso
-        await logToFile.info('Iniciando category scraper', 'controller', {
-            categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
-            pageDelay,
-            categoryDelay,
-            webhookUrl: !!webhookUrl,
-            collection: collection.collectionName
-        });
-
-        const result = await ScraperService.categoryScraper({
+        const enqueueResult = await ScraperService.categoryScraper({
             categoryIds,
             pageDelay,
             categoryDelay,
@@ -84,23 +90,46 @@ const categoryScraperController = async (req, res) => {
             collection,
         });
 
-        // Log del resultado exitoso
-        await logToFile.info('Category scraper finalizado exitosamente', 'controller', {
-            total: result.total,
-            errors: result.errors,
-            uploaded: result.uploaded,
-            processed: result.processed,
-            successRate: ((result.total / result.processed) * 100).toFixed(2) + '%'
+        const body = buildAcceptedResponse(enqueueResult, 'Category scraper');
+        res.status(202).json(body);
+
+        await logToFile.info('Category scraper encolado/iniciado', 'controller', {
+            jobId: enqueueResult.jobId,
+            queued: enqueueResult.queued,
+            position: enqueueResult.position,
+            categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
+            pageDelay,
+            categoryDelay,
+            webhookUrl: !!webhookUrl,
+            collection: collection.collectionName,
         });
 
     } catch (error) {
-        // Log del error
-        console.error('Error en categoryScraperController', 'controller', {
-            error: error.message,
-            stack: error.stack,
-            body: req.body
+        console.error('Error en categoryScraperController', { error: error.message, stack: error.stack, body: req.body });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
+const analyzeSitemapController = async (req, res) => {
+    try {
+        const { webhookUrl } = req.body;
+
+        const enqueueResult = await ScraperService.analyzeSitemapService({ webhookUrl });
+
+        const body = buildAcceptedResponse(enqueueResult, 'Sitemap analysis');
+        res.status(202).json(body);
+
+        await logToFile.info('Análisis de sitemap encolado/iniciado', 'controller', {
+            jobId: enqueueResult.jobId,
+            queued: enqueueResult.queued,
+            position: enqueueResult.position,
+            webhookUrl: !!webhookUrl,
         });
 
+    } catch (error) {
+        console.error('Error en analyzeSitemapController', { error: error.message, stack: error.stack, body: req.body });
         if (!res.headersSent) {
             res.status(500).json({ status: 'error', message: error.message });
         }
@@ -108,37 +137,82 @@ const categoryScraperController = async (req, res) => {
 };
 
 /**
- * Nuevo Controller para iniciar el análisis del Sitemap.
- * Solo necesita el webhookUrl y responde inmediatamente (202 Accepted).
+ * GET /scraper/status
+ * Retorna el estado actual de la cola: job corriendo, jobs en espera, historial reciente.
+ *
+ * Ejemplo de respuesta:
+ * {
+ *   "isRunning": true,
+ *   "running": { "id": "sitemapScraper-...", "type": "sitemapScraper", "startedAt": "...", "elapsedMs": 12000 },
+ *   "pending": 2,
+ *   "pendingJobs": [...],
+ *   "recentHistory": [...]
+ * }
  */
-const analyzeSitemapController = async (req, res) => {
+const scraperStatusController = (req, res) => {
+    res.status(200).json(getStatus());
+};
+
+// ──────────────────────────────────────────────────────────────────────────
+// CANCELACIÓN DE JOBS
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * DELETE /scraper/jobs/:jobId
+ *
+ * Cancela un job específico por ID.
+ * - 200: job cancelado (estaba pendiente o en ejecución).
+ * - 400: el job ya está completado/fallido.
+ * - 404: jobId no encontrado.
+ */
+const cancelJobController = async (req, res) => {
+    const { jobId } = req.params;
     try {
-        const { webhookUrl } = req.body;
+        const result = await cancelJob(jobId);
 
-        res.status(202).json({ status: 'accepted', message: 'Sitemap analysis started' });
+        if (result === null) {
+            return res.status(404).json({ status: 'error', message: `Job '${jobId}' no encontrado.` });
+        }
 
-        // Log del inicio del proceso
-        await logToFile.info('Iniciando análisis de sitemap', 'controller', {
-            webhookUrl: !!webhookUrl
-        });
+        if (result.alreadyDone) {
+            return res.status(400).json({
+                status: 'error',
+                message: `El job '${jobId}' ya finalizó con estado '${result.status}' y no puede ser cancelado.`,
+                jobStatus: result.status,
+            });
+        }
 
-        const result = await ScraperService.analyzeSitemapService({ webhookUrl });
+        const message = result.wasRunning
+            ? `Solicitud de cancelación enviada al job '${jobId}' en ejecución. Finalizará al completar la operación actual.`
+            : `Job '${jobId}' eliminado de la cola de espera.`;
 
-        // Log del resultado exitoso
-        await logToFile.info('Análisis de sitemap finalizado exitosamente', 'controller', {
-            totalProducts: result.summary?.totalProducts,
-            totalBrands: result.summary?.totalBrands,
-            totalCategories: result.summary?.totalCategories
-        });
-
+        return res.status(200).json({ status: 'cancelled', jobId, message, ...result });
     } catch (error) {
-        // Log del error
-        console.error('Error en analyzeSitemapController', 'controller', {
-            error: error.message,
-            stack: error.stack,
-            body: req.body
-        });
+        console.error('Error en cancelJobController', { error: error.message, jobId });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
 
+/**
+ * DELETE /scraper/jobs/all
+ *
+ * Purga todos los jobs pendientes de la cola.
+ * El job en ejecución (si lo hay) no se ve afectado.
+ * - 200: purga completada con conteo de jobs eliminados.
+ */
+const cancelAllJobsController = async (req, res) => {
+    try {
+        const result = await cancelAllJobs();
+        return res.status(200).json({
+            status: 'purged',
+            message: `${result.cancelledCount} job(s) pendiente(s) eliminado(s) de la cola.`,
+            cancelledCount: result.cancelledCount,
+            queueSnapshot: result.queueSnapshot,
+        });
+    } catch (error) {
+        console.error('Error en cancelAllJobsController', { error: error.message });
         if (!res.headersSent) {
             res.status(500).json({ status: 'error', message: error.message });
         }
@@ -149,4 +223,8 @@ module.exports = {
     categoryScraperController,
     sitemapScraperController,
     analyzeSitemapController,
+    scraperStatusController,
+    cancelJobController,
+    cancelAllJobsController,
+    buildAcceptedResponse,   // exportada para reusar en otros controllers
 };
