@@ -8,13 +8,15 @@
  *  1. Login propio a Odoo
  *  2. Carga productos actuales de MongoDB (product_id + list_price, proyección mínima)
  *  3. Lee product_template_ids del sitemap cacheado (sin HTTP)
- *  4. Consulta list_price en Odoo en batches concurrentes con barra de progreso
- *  5. Clasifica: changed / new / removed
- *  6. Persiste resultado en DB (colección price_check_results)
- *  7. Loguea eventos con logToFile
+ *  4. Resuelve cada producto igual que el scraper principal para obtener el product_id persistido
+ *  5. Consulta list_price en Odoo en batches concurrentes
+ *  6. Clasifica: changed / new / removed usando IDs consistentes
+ *  7. Persiste resultado en DB (colección price_check_results)
+ *  8. Loguea eventos con logToFile
  */
 
 const axios   = require('axios');
+const cheerio = require('cheerio');
 const { wrapper } = require('axios-cookiejar-support');
 const tough   = require('tough-cookie');
 const logToFile = require('../utils/logToFile');
@@ -25,8 +27,8 @@ const ODOO_USER = process.env.ODOO_USER;
 const ODOO_PASS = process.env.ODOO_PASS;
 const ODOO_DB   = process.env.ODOO_DB;
 
-const CONCURRENCY   = 3;    // requests paralelos — conservador para no saturar Odoo
-const REQUEST_DELAY = 400;  // ms entre batches
+const CONCURRENCY = Number(process.env.PRICE_CHECK_CONCURRENCY || 2);
+const REQUEST_DELAY = Number(process.env.PRICE_CHECK_REQUEST_DELAY || 800);
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
@@ -60,20 +62,67 @@ async function loginToOdoo(client) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BARRA DE PROGRESO EN CONSOLA
+// HELPERS DE RESOLUCIÓN DE PRODUCTO
 // ─────────────────────────────────────────────────────────────────────────────
 
+function buildAbsoluteUrl(urlOrPath) {
+    if (!urlOrPath) return null;
+    return urlOrPath.startsWith('http') ? urlOrPath : `${BASE_URL}${urlOrPath}`;
+}
 
+function extractProductIdFromUrl(url) {
+    const match = String(url || '').match(/\/shop\/(\d+)-/);
+    return match?.[1] ?? null;
+}
+
+function extractTemplateIdFromUrl(url) {
+    const match = String(url || '').match(/-(\d+)$/);
+    return match ? Number(match[1]) : null;
+}
+
+async function resolveProductFromOdoo(client, sitemapProduct) {
+    try {
+        const initialUrl = buildAbsoluteUrl(sitemapProduct.sourceUrl)
+            || `${BASE_URL}/shop/${sitemapProduct.product_template_id}`;
+
+        const response = await client.get(initialUrl);
+        const finalUrl = response.request?.res?.responseUrl || initialUrl;
+        const $ = cheerio.load(response.data);
+
+        const persistedProductId = extractProductIdFromUrl(finalUrl)
+            || extractProductIdFromUrl(initialUrl);
+        const odooProductId = $("input[name='product_id']").val();
+        const templateInput = $("input[name='product_template_id']").val();
+        const productTemplateId = Number(
+            templateInput
+            || sitemapProduct.product_template_id
+            || extractTemplateIdFromUrl(finalUrl)
+            || extractTemplateIdFromUrl(initialUrl)
+        );
+
+        if (!persistedProductId || !odooProductId || !Number.isFinite(productTemplateId)) {
+            return null;
+        }
+
+        return {
+            product_id: String(persistedProductId),
+            odoo_product_id: String(odooProductId),
+            product_template_id: productTemplateId,
+            sourceUrl: sitemapProduct.sourceUrl,
+            finalUrl,
+        };
+    } catch (err) {
+        return null;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FETCH DE PRECIO INDIVIDUAL
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
+async function fetchPriceFromOdoo(client, product) {
     try {
-        const refererUrl = sourceUrl.startsWith('http')
-            ? sourceUrl
-            : `${BASE_URL}${sourceUrl}`;
+        const refererUrl = product.finalUrl || buildAbsoluteUrl(product.sourceUrl) || `${BASE_URL}/shop/${product.product_template_id}`;
 
         const response = await client.post(
             `${BASE_URL}/website_sale/get_combination_info`,
@@ -82,8 +131,8 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
                 jsonrpc: '2.0',
                 method:  'call',
                 params:  {
-                    product_template_id,
-                    product_id:         product_template_id,
+                    product_template_id: product.product_template_id,
+                    product_id:         product.odoo_product_id,
                     combination:        [],
                     add_qty:            1,
                     parent_combination: [],
@@ -93,17 +142,34 @@ async function fetchPriceFromOdoo(client, { product_template_id, sourceUrl }) {
         );
 
         const result = response.data?.result;
-        if (!result?.list_price) return null;
+        if (result?.list_price == null) return null;
 
         return {
-            product_template_id,
-            list_price:   result.list_price,
-            display_name: result.display_name ?? null,
+            product_id:           product.product_id,
+            product_template_id:  product.product_template_id,
+            odoo_product_id:      product.odoo_product_id,
+            list_price:           result.list_price,
+            display_name:         result.display_name ?? null,
+            finalUrl:             product.finalUrl,
         };
     } catch (err) {
         // Error silencioso por producto — el caller maneja el null
         return null;
     }
+}
+
+async function resolveAndFetchPrice(client, sitemapProduct) {
+    const resolvedProduct = await resolveProductFromOdoo(client, sitemapProduct);
+    if (!resolvedProduct) {
+        return { status: 'resolve_failed', product: sitemapProduct };
+    }
+
+    const priceData = await fetchPriceFromOdoo(client, resolvedProduct);
+    if (!priceData) {
+        return { status: 'price_failed', product: resolvedProduct };
+    }
+
+    return { status: 'ok', product: priceData };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,7 +225,7 @@ async function persistResult(result) {
             durationMs:  result.summary.durationMs,
             summary:     result.summary,
             changedIds:  result.changed.map(p => p.product_id),
-            newIds:      result.new.map(p => String(p.product_template_id)),
+            newIds:      result.new.map(p => p.product_id),
             removedIds:  result.removed.map(p => p.product_id),
             // Guardamos los detalles completos de changed ya que son los más útiles
             changedDetail: result.changed,
@@ -187,8 +253,8 @@ async function getProductListFromSitemap() {
     }
 
     return sitemapDoc.productUrls.map(url => {
-        const match = url.match(/-(\d+)$/);
-        return match ? { product_template_id: Number(match[1]), sourceUrl: url } : null;
+        const productTemplateId = extractTemplateIdFromUrl(url);
+        return productTemplateId ? { product_template_id: productTemplateId, sourceUrl: url } : null;
     }).filter(Boolean);
 }
 
@@ -230,25 +296,37 @@ async function checkPrices(signal) {
     const sitemapProducts = await getProductListFromSitemap();
 
     await logToFile.info(`Comparando precios`, 'priceChecker', {
-        totalOdoo: sitemapProducts.length,
-        totalDB:   dbMap.size,
+        totalSitemap: sitemapProducts.length,
+        totalDB:      dbMap.size,
+        concurrency:  CONCURRENCY,
+        requestDelay: REQUEST_DELAY,
     });
-    console.log(`\n[priceChecker] ${sitemapProducts.length} en Odoo | ${dbMap.size} en DB`);
+    console.log(`\n[priceChecker] ${sitemapProducts.length} URLs en sitemap | ${dbMap.size} productos en DB | concurrency:${CONCURRENCY} delay:${REQUEST_DELAY}ms`);
 
-    // ── 4. Consultar precios en Odoo (batches con barra de progreso) ─────────
-    // El signal se pasa al loop de batches para poder interrumpirlo si se
-    // solicita cancelación mientras el price check está en ejecución.
-    const tasks = sitemapProducts.map(p => () => fetchPriceFromOdoo(client, p));
-    const odooResults = await runInBatchesWithProgress(tasks, CONCURRENCY, REQUEST_DELAY, signal);
+    // ── 4. Resolver IDs como scraper principal y consultar precios en Odoo ────
+    const tasks = sitemapProducts.map(p => () => resolveAndFetchPrice(client, p));
+    const checkResults = await runInBatchesWithProgress(tasks, CONCURRENCY, REQUEST_DELAY, signal);
 
     const odooMap = new Map();
-    for (const r of odooResults) {
-        if (r) odooMap.set(String(r.product_template_id), r);
+    let resolveFailedCount = 0;
+    let priceFailedCount = 0;
+
+    for (const item of checkResults) {
+        if (item.status === 'ok' && item.product) {
+            odooMap.set(String(item.product.product_id), item.product);
+        } else if (item.status === 'resolve_failed') {
+            resolveFailedCount++;
+        } else if (item.status === 'price_failed') {
+            priceFailedCount++;
+        }
     }
 
-    const failedCount = sitemapProducts.length - odooMap.size;
+    const failedCount = resolveFailedCount + priceFailedCount;
     if (failedCount > 0) {
-        await logToFile.warn(`${failedCount} productos no respondieron desde Odoo`, 'priceChecker');
+        await logToFile.warn(`${failedCount} productos no pudieron verificarse desde Odoo`, 'priceChecker', {
+            resolveFailed: resolveFailedCount,
+            priceFailed: priceFailedCount,
+        });
     }
 
     // ── 5. Clasificar diferencias ────────────────────────────────────────────
@@ -256,29 +334,33 @@ async function checkPrices(signal) {
     const newProds = [];
     const removed  = [];
 
-    for (const [templateId, odooData] of odooMap) {
-        const dbEntry = dbMap.get(templateId);
+    for (const [productId, odooData] of odooMap) {
+        const dbEntry = dbMap.get(productId);
 
         if (!dbEntry) {
             newProds.push({
-                product_template_id: Number(templateId),
-                display_name:        odooData.display_name,
-                list_price:          odooData.list_price,
+                product_id:           productId,
+                product_template_id:  odooData.product_template_id,
+                odoo_product_id:      odooData.odoo_product_id,
+                display_name:         odooData.display_name,
+                list_price:           odooData.list_price,
+                finalUrl:             odooData.finalUrl,
             });
             continue;
         }
 
-        const oldPrice = dbEntry.list_price;
-        const newPrice = odooData.list_price;
+        const oldPrice = Number(dbEntry.list_price);
+        const newPrice = Number(odooData.list_price);
 
         if (Math.abs(oldPrice - newPrice) > 0.001) {
             const diff = newPrice - oldPrice;
             changed.push({
-                product_id:   templateId,
-                display_name: dbEntry.display_name ?? odooData.display_name,
-                old_price:    oldPrice,
-                new_price:    newPrice,
-                diff:         parseFloat(diff.toFixed(2)),
+                product_id:           productId,
+                product_template_id:  odooData.product_template_id,
+                display_name:         dbEntry.display_name ?? odooData.display_name,
+                old_price:            oldPrice,
+                new_price:            newPrice,
+                diff:                 parseFloat(diff.toFixed(2)),
                 diff_percent: oldPrice > 0
                     ? parseFloat(((diff / oldPrice) * 100).toFixed(2))
                     : null,
@@ -286,14 +368,19 @@ async function checkPrices(signal) {
         }
     }
 
-    for (const [productId, dbEntry] of dbMap) {
-        if (!odooMap.has(productId)) {
-            removed.push({
-                product_id:   productId,
-                display_name: dbEntry.display_name,
-                list_price:   dbEntry.list_price,
-            });
+    const removedSkippedDueToFailures = failedCount > 0;
+    if (!removedSkippedDueToFailures) {
+        for (const [productId, dbEntry] of dbMap) {
+            if (!odooMap.has(productId)) {
+                removed.push({
+                    product_id:   productId,
+                    display_name: dbEntry.display_name,
+                    list_price:   dbEntry.list_price,
+                });
+            }
         }
+    } else {
+        await logToFile.warn('Se omite cálculo de removed por fallos de resolución/precio para evitar falsos positivos.', 'priceChecker');
     }
 
     const durationMs = Date.now() - start;
@@ -305,13 +392,17 @@ async function checkPrices(signal) {
             removed:    removed.length,
             total_odoo: odooMap.size,
             total_db:   dbMap.size,
+            total_sitemap: sitemapProducts.length,
             failed:     failedCount,
+            resolve_failed: resolveFailedCount,
+            price_failed: priceFailedCount,
+            removed_skipped: removedSkippedDueToFailures,
             checkedAt:  new Date().toISOString(),
             durationMs,
         },
         // Solo IDs en el webhook para no superar límites de payload
         changedIds:  changed.map(p => p.product_id),
-        newIds:      newProds.map(p => String(p.product_template_id)),
+        newIds:      newProds.map(p => p.product_id),
         removedIds:  removed.map(p => p.product_id),
         // Detalle completo disponible en la DB
         changed,
