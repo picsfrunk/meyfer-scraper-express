@@ -27,8 +27,8 @@ const ODOO_USER = process.env.ODOO_USER;
 const ODOO_PASS = process.env.ODOO_PASS;
 const ODOO_DB   = process.env.ODOO_DB;
 
-const CONCURRENCY   = 3;    // requests paralelos — conservador para no saturar Odoo
-const REQUEST_DELAY = 400;  // ms entre batches
+const CONCURRENCY = Number(process.env.PRICE_CHECK_CONCURRENCY || 2);
+const REQUEST_DELAY = Number(process.env.PRICE_CHECK_REQUEST_DELAY || 800);
 
 const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
@@ -298,8 +298,10 @@ async function checkPrices(signal) {
     await logToFile.info(`Comparando precios`, 'priceChecker', {
         totalSitemap: sitemapProducts.length,
         totalDB:      dbMap.size,
+        concurrency:  CONCURRENCY,
+        requestDelay: REQUEST_DELAY,
     });
-    console.log(`\n[priceChecker] ${sitemapProducts.length} URLs en sitemap | ${dbMap.size} productos en DB`);
+    console.log(`\n[priceChecker] ${sitemapProducts.length} URLs en sitemap | ${dbMap.size} productos en DB | concurrency:${CONCURRENCY} delay:${REQUEST_DELAY}ms`);
 
     // ── 4. Resolver IDs como scraper principal y consultar precios en Odoo ────
     const tasks = sitemapProducts.map(p => () => resolveAndFetchPrice(client, p));
