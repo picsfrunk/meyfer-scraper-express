@@ -12,10 +12,12 @@ const logToFile = require('../../utils/logToFile');
 
 // ─── Tipos de job aceptados ────────────────────────────────────────────────
 const JOB_TYPES = {
-    SITEMAP:      'sitemapScraper',
-    CATEGORY:     'categoryScraper',
-    ANALYZE:      'sitemapAnalysis',
-    PRICE_CHECK:  'priceCheck',
+    SITEMAP:               'sitemapScraper',
+    CATEGORY:              'categoryScraper',
+    ANALYZE:               'sitemapAnalysis',
+    PRICE_CHECK:           'priceCheck',
+    CATEGORIES_RESTORE:    'categoriesRestore',
+    CATEGORIES_REORGANIZE: 'categoriesReorganize',
 };
 
 // ─── Estado interno del singleton ─────────────────────────────────────────
@@ -240,6 +242,19 @@ function _sanitizeResult(result, jobType) {
         return {
             summary:    result.summary ?? null,
             durationMs: result.summary?.durationMs ?? result.durationMs ?? null,
+        };
+    }
+
+    if ([JOB_TYPES.CATEGORIES_RESTORE, JOB_TYPES.CATEGORIES_REORGANIZE].includes(jobType)) {
+        return {
+            total:        result.total        ?? null,
+            processed:    result.processed    ?? null,
+            errors:       result.errors       ?? result.totalErrors ?? null,
+            pagesVisited: result.pagesVisited ?? null,
+            matched:      result.matched      ?? null,
+            modified:     result.modified     ?? null,
+            dryRun:       result.dryRun       ?? null,
+            durationMs:   result.durationMs   ?? null,
         };
     }
 

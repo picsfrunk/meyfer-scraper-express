@@ -10,6 +10,10 @@ router.post('/sitemap',          scraperController.sitemapScraperController);
 router.post('/sitemap/analysis', scraperController.analyzeSitemapController);
 router.get('/status',            scraperStatusController);
 
+// ── Category maintenance ───────────────────────────────────────────────────
+router.post('/categories/restore-official', scraperController.restoreOfficialCategoriesController);
+router.post('/categories/reorganize',       scraperController.reorganizeCategoriesController);
+
 // ── Price check ────────────────────────────────────────────────────────────
 router.post('/check-prices', checkPricesController);
 

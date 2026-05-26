@@ -79,7 +79,7 @@ const sitemapScraperController = async (req, res) => {
 
 const categoryScraperController = async (req, res) => {
     try {
-        const { categoryIds, pageDelay, categoryDelay, webhookUrl } = req.body;
+        const { categoryIds, pageDelay, categoryDelay, webhookUrl, useAutoDiscovery = true } = req.body;
         const collection = req.collection;
 
         const enqueueResult = await ScraperService.categoryScraper({
@@ -88,6 +88,7 @@ const categoryScraperController = async (req, res) => {
             categoryDelay,
             webhookUrl,
             collection,
+            useAutoDiscovery,
         });
 
         const body = buildAcceptedResponse(enqueueResult, 'Category scraper');
@@ -100,6 +101,7 @@ const categoryScraperController = async (req, res) => {
             categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
             pageDelay,
             categoryDelay,
+            useAutoDiscovery,
             webhookUrl: !!webhookUrl,
             collection: collection.collectionName,
         });
@@ -130,6 +132,65 @@ const analyzeSitemapController = async (req, res) => {
 
     } catch (error) {
         console.error('Error en analyzeSitemapController', { error: error.message, stack: error.stack, body: req.body });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
+const restoreOfficialCategoriesController = async (req, res) => {
+    try {
+        const { webhookUrl } = req.body;
+
+        const enqueueResult = await ScraperService.restoreOfficialCategories({ webhookUrl });
+
+        const body = buildAcceptedResponse(enqueueResult, 'Restore official categories');
+        res.status(202).json(body);
+
+        await logToFile.info('Restauración de categorías oficiales encolada/iniciada', 'controller', {
+            jobId: enqueueResult.jobId,
+            queued: enqueueResult.queued,
+            position: enqueueResult.position,
+            webhookUrl: !!webhookUrl,
+        });
+
+    } catch (error) {
+        console.error('Error en restoreOfficialCategoriesController', { error: error.message, stack: error.stack, body: req.body });
+        if (!res.headersSent) {
+            res.status(500).json({ status: 'error', message: error.message });
+        }
+    }
+};
+
+const reorganizeCategoriesController = async (req, res) => {
+    try {
+        const { categoryIds = 'all', pageDelay, dryRun = false, webhookUrl } = req.body;
+        const collection = req.collection;
+
+        const enqueueResult = await ScraperService.reorganizeCategories({
+            categoryIds,
+            pageDelay,
+            dryRun,
+            webhookUrl,
+            collection,
+        });
+
+        const body = buildAcceptedResponse(enqueueResult, 'Category reorganization');
+        res.status(202).json(body);
+
+        await logToFile.info('Reorganización de categorías encolada/iniciada', 'controller', {
+            jobId: enqueueResult.jobId,
+            queued: enqueueResult.queued,
+            position: enqueueResult.position,
+            categoryIds: Array.isArray(categoryIds) ? categoryIds : [categoryIds],
+            pageDelay,
+            dryRun,
+            webhookUrl: !!webhookUrl,
+            collection: collection.collectionName,
+        });
+
+    } catch (error) {
+        console.error('Error en reorganizeCategoriesController', { error: error.message, stack: error.stack, body: req.body });
         if (!res.headersSent) {
             res.status(500).json({ status: 'error', message: error.message });
         }
@@ -223,6 +284,8 @@ module.exports = {
     categoryScraperController,
     sitemapScraperController,
     analyzeSitemapController,
+    restoreOfficialCategoriesController,
+    reorganizeCategoriesController,
     scraperStatusController,
     cancelJobController,
     cancelAllJobsController,

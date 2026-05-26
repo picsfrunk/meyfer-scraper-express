@@ -1,4 +1,8 @@
 const { runCategoryScraper, runSitemapScraper, analyzeSitemap } = require('../../scraper/scraper');
+const {
+    restoreOfficialCategoriesConfig,
+    reorganizeProductCategories,
+} = require('../../scraper/categoryMaintenance');
 const { enqueue, JOB_TYPES } = require('./scraperQueue');
 
 /**
@@ -74,7 +78,13 @@ async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDel
     return result;
 }
 
-async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_DELAY_MS, categoryDelay, collection }, signal) {
+async function _runCategoryScraper({
+    categoryIds,
+    pageDelay = process.env.PAGE_DELAY_MS,
+    categoryDelay,
+    collection,
+    useAutoDiscovery = true,
+}, signal) {
     let result = createInitialResult();
 
     try {
@@ -83,13 +93,61 @@ async function _runCategoryScraper({ categoryIds, pageDelay = process.env.PAGE_D
             pageDelay,
             categoryDelay,
             collection,
-            useAutoDiscovery: true,
+            useAutoDiscovery,
             signal,  // ← propagado al ScraperRunner
         });
         result = { ...result, ...scraperResponse };
     } catch (error) {
         result.totalErrors = 1;
         console.error(`[scraperService] Error en categoryScraper:`, error);
+        throw error;
+    }
+
+    return result;
+}
+
+async function _runRestoreOfficialCategories({ }) {
+    let result = createInitialResult();
+    const start = Date.now();
+
+    try {
+        const response = await restoreOfficialCategoriesConfig();
+        result = {
+            ...result,
+            ...response,
+            durationMs: Date.now() - start,
+            endTime: new Date().toISOString(),
+        };
+        console.log(`[scraperService] Categorías oficiales restauradas: ${response.total}`);
+    } catch (error) {
+        result.totalErrors = 1;
+        console.error('[scraperService] Error restaurando categorías oficiales:', error);
+        throw error;
+    }
+
+    return result;
+}
+
+async function _runReorganizeCategories({
+    categoryIds = 'all',
+    pageDelay = process.env.PAGE_DELAY_MS,
+    dryRun = false,
+    collection,
+}, signal) {
+    let result = createInitialResult();
+
+    try {
+        const response = await reorganizeProductCategories({
+            collection,
+            categoryIds,
+            pageDelay,
+            dryRun,
+            signal,
+        });
+        result = { ...result, ...response };
+    } catch (error) {
+        result.totalErrors = 1;
+        console.error('[scraperService] Error reorganizando categorías:', error);
         throw error;
     }
 
@@ -112,8 +170,18 @@ async function categoryScraper(params) {
     return enqueue({ type: JOB_TYPES.CATEGORY, params, handler: _runCategoryScraper });
 }
 
+async function restoreOfficialCategories(params) {
+    return enqueue({ type: JOB_TYPES.CATEGORIES_RESTORE, params, handler: _runRestoreOfficialCategories });
+}
+
+async function reorganizeCategories(params) {
+    return enqueue({ type: JOB_TYPES.CATEGORIES_REORGANIZE, params, handler: _runReorganizeCategories });
+}
+
 module.exports = {
     analyzeSitemapService,
     sitemapScraper,
     categoryScraper,
+    restoreOfficialCategories,
+    reorganizeCategories,
 };
