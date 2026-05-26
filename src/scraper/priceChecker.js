@@ -182,11 +182,11 @@ async function resolveAndFetchPrice(client, sitemapProduct) {
  * @param {Function[]} tasks      - Array de funciones async () => result
  * @param {number}     concurrency
  * @param {number}     delayMs    - Delay entre batches
- * @param {object}     [signal]   - { cancelled: false } — mutado por cancelJob()
+ * @param {object}     [signal]   - { canceled: false } — mutado por cancelJob()
  *
- * Si signal.cancelled es true al inicio de un batch, lanza un error para
+ * Si signal.canceled es true al inicio de un batch, lanza un error para
  * interrumpir el loop. El error es capturado por checkPrices() y relanzado
- * para que scraperQueue lo registre como status 'cancelled'.
+ * para que scraperQueue lo registre como status 'canceled'.
  */
 async function runInBatchesWithProgress(tasks, concurrency, delayMs, signal) {
     const results = [];
@@ -194,7 +194,7 @@ async function runInBatchesWithProgress(tasks, concurrency, delayMs, signal) {
     for (let i = 0; i < tasks.length; i += concurrency) {
 
         // ── Chequeo de cancelación ─────────────────────────────────────────
-        if (signal?.cancelled) {
+        if (signal?.canceled) {
             throw new Error('Price check cancelado por solicitud del usuario.');
         }
         // ──────────────────────────────────────────────────────────────────
@@ -265,9 +265,9 @@ async function getProductListFromSitemap() {
 /**
  * Ejecuta el price check completo.
  *
- * @param {object} [signal] - { cancelled: false } propagado desde scraperQueue.
+ * @param {object} [signal] - { canceled: false } propagado desde scraperQueue.
  *   Si cancelJob() lo muta a true durante el loop de batches, se lanza un error
- *   que aborta el proceso. scraperQueue lo captura y registra el job como 'cancelled'.
+ *   que aborta el proceso. scraperQueue lo captura y registra el job como 'canceled'.
  */
 async function checkPrices(signal) {
     const start  = Date.now();
