@@ -18,6 +18,32 @@ const createInitialResult = () => ({
     startTime: new Date().toISOString()
 });
 
+/**
+ * Normaliza el contrato de cancelación entre la cola y los handlers.
+ *
+ * La cola escribe `signal.canceled`, mientras que algunos runners históricos
+ * todavía leen `signal.cancelled`. Este alias evita que un CategoryScraper en
+ * ejecución ignore la solicitud de cancelación.
+ */
+function normalizeCancelSignal(signal) {
+    if (!signal || Object.getOwnPropertyDescriptor(signal, 'cancelled')) {
+        return signal;
+    }
+
+    Object.defineProperty(signal, 'cancelled', {
+        enumerable: true,
+        configurable: true,
+        get() {
+            return Boolean(this.canceled);
+        },
+        set(value) {
+            this.canceled = Boolean(value);
+        },
+    });
+
+    return signal;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // HANDLERS INTERNOS
 // Lógica pura de scraping. NO llaman notifyWebhook — la cola (scraperQueue)
@@ -25,8 +51,7 @@ const createInitialResult = () => ({
 // también, el backend recibiría el evento 'completed' dos veces → email duplicado.
 //
 // Todos reciben `signal` como segundo argumento y lo propagan al runner.
-// El signal es un objeto { cancelled: false } mutado por cancelJob() cuando
-// el usuario solicita la cancelación del job en ejecución.
+// El signal canónico es { canceled: false }, con alias `cancelled` por compatibilidad.
 // ──────────────────────────────────────────────────────────────────────────
 
 async function _runAnalyzeSitemap({ }, signal) {
@@ -66,7 +91,7 @@ async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDel
             limitProducts,
             pageDelay,
             collection,
-            signal,  // ← propagado al ScraperRunner
+            signal: normalizeCancelSignal(signal),  // ← propagado al ScraperRunner
         });
         result = { ...result, ...scraperResponse };
     } catch (error) {
@@ -94,7 +119,7 @@ async function _runCategoryScraper({
             categoryDelay,
             collection,
             useAutoDiscovery,
-            signal,  // ← propagado al ScraperRunner
+            signal: normalizeCancelSignal(signal),  // ← propagado al ScraperRunner
         });
         result = { ...result, ...scraperResponse };
     } catch (error) {
@@ -142,7 +167,7 @@ async function _runReorganizeCategories({
             categoryIds,
             pageDelay,
             dryRun,
-            signal,
+            signal: normalizeCancelSignal(signal),
         });
         result = { ...result, ...response };
     } catch (error) {
