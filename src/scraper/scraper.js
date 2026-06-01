@@ -10,7 +10,7 @@ const http = require('http');
 
 const logToFile = require('../utils/logToFile');
 const { processProductImage } = require('../utils/imageUploader');
-const { getConfigCollection, getSitemapCollection } = require('../database/mongo');
+const { getConfigCollection, getScrapedCollection, getSitemapCollection } = require('../database/mongo');
 
 // ============================================================
 // CONFIGURACIÓN Y CLIENTE HTTP
@@ -97,6 +97,56 @@ async function loginToOdoo() {
 function extractProductIdFromUrl(url) {
     const urlMatch = url.match(/\/shop\/(\d+)-/);
     return urlMatch && urlMatch[1] ? urlMatch[1] : null;
+}
+
+function extractProductTemplateIdFromUrl(url) {
+    const normalizedUrl = String(url).split(/[?#]/)[0].replace(/\/$/, '');
+    const templateMatch = normalizedUrl.match(/-(\d+)$/);
+    return templateMatch && templateMatch[1] ? templateMatch[1] : null;
+}
+
+function parseSitemapProductUrl(url) {
+    const productId = extractProductIdFromUrl(url);
+    const productTemplateId = extractProductTemplateIdFromUrl(url);
+
+    if (!productId || !productTemplateId) return null;
+
+    return {
+        product_id: String(productId),
+        product_template_id: String(productTemplateId),
+        sourceUrl: url,
+    };
+}
+
+function normalizeProductIdList(value) {
+    if (!value) return [];
+    const raw = Array.isArray(value) ? value : String(value).split(',');
+    return raw.map(id => String(id).trim()).filter(Boolean);
+}
+
+function normalizeTargetProducts(value) {
+    if (!Array.isArray(value)) return [];
+
+    return value
+        .map(product => {
+            if (!product || typeof product !== 'object') return null;
+            const productId = product.product_id ?? product.productId;
+            const productTemplateId = product.product_template_id ?? product.productTemplateId;
+
+            if (!productId || !productTemplateId) return null;
+
+            return {
+                product_id: String(productId),
+                product_template_id: String(productTemplateId),
+                sourceUrl: product.sourceUrl || null,
+                expectedName: product.name || product.expectedName || null,
+            };
+        })
+        .filter(Boolean);
+}
+
+function categoryAuditLog(event, payload = {}) {
+    console.log(`[category-audit] ${event} ${JSON.stringify(payload)}`);
 }
 
 async function fetchProductDetailsFromAPI({ product_id, product_template_id, refererUrl }) {
@@ -729,6 +779,249 @@ class ScraperRunner {
 }
 
 // ============================================================
+// AUDITORÍA NO DESTRUCTIVA DE COBERTURA CATEGORY VS SITEMAP
+// ============================================================
+
+async function auditCategoryCoverage({
+    categoryIds = 'all',
+    useAutoDiscovery = true,
+    targetProductIds = [],
+    targetProducts = [],
+    pageDelay = 0,
+    collection = null,
+    includeMongo = true,
+    forceRefreshSitemap = false,
+} = {}) {
+    if (!await loginToOdoo()) throw new Error('Login fallido a Odoo.');
+
+    const sitemapCollection = await getSitemapCollection();
+    const sitemapQuery = process.env.SITEMAP_URL ? { source: process.env.SITEMAP_URL } : {};
+    let sitemapDoc = forceRefreshSitemap ? null : await sitemapCollection.findOne(sitemapQuery);
+    if (!sitemapDoc) sitemapDoc = await analyzeSitemap();
+
+    const sitemapProducts = (sitemapDoc.productUrls || [])
+        .map(parseSitemapProductUrl)
+        .filter(Boolean);
+
+    const sitemapByProductId = new Map(sitemapProducts.map(p => [p.product_id, p]));
+    let mongoProductIds = null;
+    if (includeMongo) {
+        const scrapedCollection = collection || await getScrapedCollection();
+        const persistedProducts = await scrapedCollection
+            .find({}, { projection: { product_id: 1 } })
+            .toArray();
+        mongoProductIds = new Set(persistedProducts.map(p => String(p.product_id)).filter(Boolean));
+    }
+
+    const explicitTargets = new Set(normalizeProductIdList(targetProductIds));
+    const externalTargets = normalizeTargetProducts(targetProducts);
+    const externalTargetByProductId = new Map(externalTargets.map(p => [p.product_id, p]));
+    const missingInMongo = mongoProductIds
+        ? sitemapProducts.filter(p => !mongoProductIds.has(p.product_id)).map(p => p.product_id)
+        : [];
+    const targetIds = explicitTargets.size || externalTargets.length
+        ? [...new Set([...externalTargets.map(p => p.product_id), ...explicitTargets])]
+        : missingInMongo;
+
+    categoryAuditLog('sitemap_loaded', {
+        totalProducts: sitemapProducts.length,
+        targetProducts: targetIds.length,
+        source: sitemapDoc.source,
+    });
+
+    const strategy = new CategoryProductStrategy({ categoryIds, useAutoDiscovery });
+    const categoryProducts = await strategy.getProductList();
+
+    const categoryByTemplateId = new Map();
+    for (const product of categoryProducts) {
+        const templateId = String(product.product_template_id);
+        if (!categoryByTemplateId.has(templateId)) categoryByTemplateId.set(templateId, []);
+        categoryByTemplateId.get(templateId).push(product);
+    }
+
+    const sitemapNotInCategoryPages = sitemapProducts
+        .filter(p => !categoryByTemplateId.has(p.product_template_id))
+        .map(p => p.product_id);
+
+    const mongoNotInSitemap = mongoProductIds
+        ? [...mongoProductIds].filter(id => !sitemapByProductId.has(id))
+        : [];
+
+    categoryAuditLog('category_pages_loaded', {
+        totalProducts: categoryProducts.length,
+        uniqueTemplates: categoryByTemplateId.size,
+        sitemapNotInCategoryPages: sitemapNotInCategoryPages.length,
+    });
+
+    const auditedProducts = [];
+    const idsToAudit = targetIds.length ? targetIds : sitemapNotInCategoryPages;
+
+    for (const productId of idsToAudit) {
+        const sitemapProduct = sitemapByProductId.get(String(productId)) || externalTargetByProductId.get(String(productId));
+        if (!sitemapProduct) {
+            auditedProducts.push({
+                product_id: String(productId),
+                status: 'not_found_in_sitemap',
+                reason: 'El product_id solicitado no está en el sitemap analizado y no incluye product_template_id externo para auditar categoría.',
+            });
+            categoryAuditLog('not_found_in_sitemap', { product_id: String(productId) });
+            continue;
+        }
+
+        const inSitemap = sitemapByProductId.has(sitemapProduct.product_id);
+        const categoryMatches = categoryByTemplateId.get(sitemapProduct.product_template_id) || [];
+        if (!categoryMatches.length) {
+            const auditRecord = {
+                ...sitemapProduct,
+                status: 'found_in_sitemap_not_in_category_pages',
+                reason: inSitemap
+                    ? 'El template del sitemap no aparece en ningún form.oe_product_cart recorrido por CategoryProductStrategy.'
+                    : 'El template informado para el target no aparece en ningún form.oe_product_cart recorrido por CategoryProductStrategy.',
+                inSitemap,
+                inMongo: mongoProductIds ? mongoProductIds.has(sitemapProduct.product_id) : null,
+            };
+            auditedProducts.push(auditRecord);
+            categoryAuditLog('found_in_sitemap_not_in_category_pages', {
+                product_id: sitemapProduct.product_id,
+                product_template_id: sitemapProduct.product_template_id,
+                sourceUrl: sitemapProduct.sourceUrl,
+            });
+            continue;
+        }
+
+        const categoryProduct = categoryMatches[0];
+        categoryAuditLog('found_in_category_page', {
+            product_id: sitemapProduct.product_id,
+            product_template_id: sitemapProduct.product_template_id,
+            category_id: categoryProduct.categoryId,
+            category_name: categoryProduct.categoryName,
+        });
+
+        const auditRecord = {
+            ...sitemapProduct,
+            status: 'found_in_category_page',
+            reason: 'Aparece en páginas de categoría; se valida detalle y get_combination_info sin persistir.',
+            inSitemap,
+            inMongo: mongoProductIds ? mongoProductIds.has(sitemapProduct.product_id) : null,
+            category_id: categoryProduct.categoryId,
+            category_name: categoryProduct.categoryName,
+            category_page_product_id: String(categoryProduct.product_id),
+            display_name_from_category: categoryProduct.display_name || null,
+        };
+
+        try {
+            const productUrl = `${BASE_URL}/shop/${categoryProduct.product_template_id}`;
+            const response = await client.get(productUrl);
+            const finalUrl = response.request?.res?.responseUrl || productUrl;
+            const customId = extractProductIdFromUrl(finalUrl);
+
+            auditRecord.resolved_url = finalUrl;
+            auditRecord.resolved_product_id = customId;
+
+            if (!customId) {
+                auditRecord.status = 'detail_fetch_failed';
+                auditRecord.reason = 'El detalle respondió, pero la URL final no contiene product_id scrapeable.';
+                categoryAuditLog('detail_fetch_failed', {
+                    product_template_id: sitemapProduct.product_template_id,
+                    reason: auditRecord.reason,
+                    resolved_url: finalUrl,
+                });
+                auditedProducts.push(auditRecord);
+                continue;
+            }
+
+            let apiProductId = categoryProduct.product_id;
+            if (!apiProductId) {
+                apiProductId = cheerio.load(response.data)("input[name='product_id']").val();
+            }
+
+            if (!apiProductId) {
+                auditRecord.status = 'skipped_before_upsert';
+                auditRecord.reason = 'No se encontró input product_id en categoría ni en detalle; el runner retornaría null antes del upsert.';
+                categoryAuditLog('skipped_before_upsert', {
+                    product_id: sitemapProduct.product_id,
+                    product_template_id: sitemapProduct.product_template_id,
+                    reason: auditRecord.reason,
+                });
+                auditedProducts.push(auditRecord);
+                continue;
+            }
+
+            const apiData = await fetchProductDetailsFromAPI({
+                product_id: apiProductId,
+                product_template_id: categoryProduct.product_template_id,
+                refererUrl: finalUrl,
+            });
+
+            if (!apiData) {
+                auditRecord.status = 'combination_info_failed';
+                auditRecord.reason = 'get_combination_info no devolvió result; el runner no llegaría al upsert.';
+                categoryAuditLog('combination_info_failed', {
+                    product_id: sitemapProduct.product_id,
+                    product_template_id: sitemapProduct.product_template_id,
+                    api_product_id: String(apiProductId),
+                });
+                auditedProducts.push(auditRecord);
+                continue;
+            }
+
+            auditRecord.status = mongoProductIds?.has(sitemapProduct.product_id)
+                ? 'persisted'
+                : 'would_reach_upsert_but_missing_in_mongo';
+            auditRecord.reason = mongoProductIds?.has(sitemapProduct.product_id)
+                ? 'El producto aparece en categoría, resuelve detalle/API y está persistido en Mongo.'
+                : 'El producto aparece en categoría y resuelve detalle/API; no se detecta un descarte no destructivo antes del upsert.';
+            auditRecord.api_display_name = apiData.display_name || null;
+            auditRecord.api_product_type = apiData.product_type || null;
+            auditedProducts.push(auditRecord);
+        } catch (error) {
+            auditRecord.status = 'detail_fetch_failed';
+            auditRecord.reason = error.message;
+            auditedProducts.push(auditRecord);
+            categoryAuditLog('detail_fetch_failed', {
+                product_id: sitemapProduct.product_id,
+                product_template_id: sitemapProduct.product_template_id,
+                error: error.message,
+            });
+        }
+
+        if (pageDelay > 0) await delay(pageDelay);
+    }
+
+    const statusCounts = auditedProducts.reduce((acc, product) => {
+        acc[product.status] = (acc[product.status] || 0) + 1;
+        return acc;
+    }, {});
+    const targetProductsNotInSitemap = auditedProducts.filter(product => product.inSitemap === false).length;
+
+    return {
+        generatedAt: new Date().toISOString(),
+        strategy: strategy.getName(),
+        summary: {
+            sitemapProducts: sitemapProducts.length,
+            categoryPageProducts: categoryProducts.length,
+            uniqueCategoryTemplates: categoryByTemplateId.size,
+            sitemapNotInCategoryPages: sitemapNotInCategoryPages.length,
+            sitemapNotInMongo: missingInMongo.length,
+            mongoNotInSitemap: mongoNotInSitemap.length,
+            auditedProducts: auditedProducts.length,
+            targetProductsNotInSitemap,
+            statusCounts,
+        },
+        sitemapNotInCategoryPages,
+        sitemapNotInMongo: missingInMongo,
+        mongoNotInSitemap,
+        auditedProducts,
+        comparedBy: {
+            sitemapVsCategoryPages: 'product_template_id, mapped back to sitemap product_id',
+            sitemapVsMongo: 'product_id',
+            detailValidation: 'resolved product_id from final detail URL',
+        },
+        note: 'Auditoría no destructiva: no ejecuta upserts, deletes ni procesamiento/subida de imágenes.',
+    };
+}
+
+// ============================================================
 // EXPORTS
 // ============================================================
 
@@ -736,5 +1029,6 @@ module.exports = {
     client, BASE_URL, loginToOdoo, analyzeSitemap, discoverCategories, getDiscoveredCategories,
     runCategoryScraper: async (opts) => new ScraperRunner({ ...opts, strategy: new CategoryProductStrategy(opts) }).run(),
     runSitemapScraper:  async (opts) => new ScraperRunner({ ...opts, strategy: new SitemapProductStrategy(opts) }).run(),
+    auditCategoryCoverage,
     CategoryProductStrategy, SitemapProductStrategy, ScraperRunner
 };
