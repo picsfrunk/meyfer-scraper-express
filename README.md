@@ -335,6 +335,44 @@ GET /shop/category/por-rubro-{slug}-{id}/page/999
 </li>
 ```
 
+**Auditoría de cobertura Category vs Sitemap**
+
+Para investigar diferencias entre productos del sitemap y productos persistidos por el Category Scraper sin modificar Mongo:
+
+```bash
+npm run audit:category-coverage
+```
+
+Por defecto audita los 19 `product_id` del issue #57 usando también los `product_template_id` informados en el issue, para poder verificar cobertura de categorías aun si el sitemap cacheado/local no contiene esos IDs. También se puede auditar todo lo que está en sitemap y falta en Mongo:
+
+```bash
+npm run audit:category-coverage -- --all-missing=true
+```
+
+Si el análisis guardado está desactualizado, forzar lectura actual de `SITEMAP_URL`:
+
+```bash
+npm run audit:category-coverage -- --refresh-sitemap=true
+```
+
+La auditoría:
+- lee el sitemap analizado para `SITEMAP_URL` o ejecuta `analyzeSitemap()` si no existe o se usa `--refresh-sitemap=true`;
+- recorre las mismas páginas que `CategoryProductStrategy`;
+- compara sitemap/targets vs páginas de categoría por `product_template_id` y reporta el `product_id`;
+- compara sitemap vs Mongo por `product_id`;
+- valida detalle y `get_combination_info` solo para los productos auditados;
+- no ejecuta upserts, deletes ni procesamiento/subida de imágenes.
+
+Estados esperados:
+- `found_in_sitemap_not_in_category_pages`: el producto existe en sitemap, pero no aparece en ningún `form.oe_product_cart` recorrido por Category Scraper.
+- `found_in_category_page`: evento intermedio; el producto apareció en una página de categoría.
+- `detail_fetch_failed`: falló la página de detalle o no se pudo resolver un `product_id` desde la URL final.
+- `combination_info_failed`: falló `/website_sale/get_combination_info`.
+- `skipped_before_upsert`: faltan datos mínimos que harían que el runner retorne `null` antes del upsert.
+- `would_reach_upsert_but_missing_in_mongo`: la auditoría no destructiva no detecta descarte antes del upsert, pero el `product_id` no está en Mongo.
+
+El reporte imprime JSON con totales de sitemap, páginas de categoría, IDs de sitemap ausentes en páginas de categoría, IDs ausentes en Mongo y una clasificación por producto. Los logs estructurados usan el prefijo `[category-audit]`.
+
 **Errores Comunes**
 | Código | Descripción | Causa |
 |--------|-------------|-------|
