@@ -271,6 +271,10 @@ Content-Type: application/json
   "categoryIds": "all",
   "pageDelay": 1500,
   "categoryDelay": 5000,
+  "testMode": true,
+  "limitProducts": 10,
+  "limitCategories": 1,
+  "skipImages": true,
   "webhookUrl": "http://backend.com/webhook/scraper-result"
 }
 ```
@@ -281,6 +285,10 @@ Content-Type: application/json
 | categoryIds | string\|number | Sí | - | "all" para todas, o ID específico |
 | pageDelay | number | No | PAGE_DELAY_MS | Delay entre páginas (ms) |
 | categoryDelay | number | No | CATEGORY_DELAY_MS | Delay entre categorías (ms) |
+| testMode | boolean | No | false | Marca la corrida como prueba/limitada en logs y resultado |
+| limitProducts | number | No | sin límite | Máximo de productos a procesar; strings numéricos son aceptados |
+| limitCategories | number | No | sin límite | Máximo de rubros a recorrer antes de paginar |
+| skipImages | boolean | No | false | Evita subir/procesar imágenes; conserva `image_url` existente o usa la URL original |
 | webhookUrl | string | No | - | URL para notificación |
 
 **Response (Inmediata)**
@@ -355,6 +363,12 @@ Si el análisis guardado está desactualizado, forzar lectura actual de `SITEMAP
 npm run audit:category-coverage -- --refresh-sitemap=true
 ```
 
+Para pruebas rápidas, la auditoría acepta los mismos límites de recorrido de categorías:
+
+```bash
+npm run audit:category-coverage -- --all-missing=true --limit-categories=1 --limit-products=20
+```
+
 La auditoría:
 - lee el sitemap analizado para `SITEMAP_URL` o ejecuta `analyzeSitemap()` si no existe o se usa `--refresh-sitemap=true`;
 - recorre las mismas páginas que `CategoryProductStrategy`;
@@ -397,7 +411,9 @@ Content-Type: application/json
 ```json
 {
   "sitemapSource": "http://web.com/sitemap.xml",
-  "limitProducts": 100,
+  "testMode": true,
+  "limitProducts": 5,
+  "skipImages": true,
   "pageDelay": 2000,
   "webhookUrl": "http://backend.com/webhook/scraper-result"
 }
@@ -407,7 +423,9 @@ Content-Type: application/json
 | Campo | Tipo | Requerido | Default | Descripción |
 |-------|------|-----------|---------|-------------|
 | sitemapSource | string | No | null | URL específica del sitemap (usa default si omite) |
-| limitProducts | number | No | 1000 | Límite de productos a procesar |
+| testMode | boolean | No | false | Marca la corrida como prueba/limitada en logs y resultado |
+| limitProducts | number | No | sin límite | Límite de productos a procesar; strings numéricos son aceptados |
+| skipImages | boolean | No | false | Evita subir/procesar imágenes; conserva `image_url` existente o usa la URL original |
 | pageDelay | number | No | PAGE_DELAY_MS | Delay entre requests (ms) |
 | webhookUrl | string | No | - | URL para notificación |
 
