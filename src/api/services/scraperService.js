@@ -1,4 +1,4 @@
-const { runCategoryScraper, runSitemapScraper, analyzeSitemap } = require('../../scraper/scraper');
+const { runCategoryScraper, runSitemapScraper, analyzeSitemap, normalizeTestModeOptions } = require('../../scraper/scraper');
 const {
     restoreOfficialCategoriesConfig,
     reorganizeProductCategories,
@@ -82,13 +82,14 @@ async function _runAnalyzeSitemap({ }, signal) {
     return result;
 }
 
-async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDelay = process.env.PAGE_DELAY_MS, collection }, signal) {
+async function _runSitemapScraper({ sitemapSource, limitProducts = null, pageDelay = process.env.PAGE_DELAY_MS, collection, testMode, limitCategories, skipImages }, signal) {
     let result = createInitialResult();
+    const testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories, skipImages });
 
     try {
         const scraperResponse = await runSitemapScraper({
             sitemapSource,
-            limitProducts,
+            ...testOptions,
             pageDelay,
             collection,
             signal: normalizeCancelSignal(signal),  // ← propagado al ScraperRunner
@@ -109,8 +110,13 @@ async function _runCategoryScraper({
     categoryDelay,
     collection,
     useAutoDiscovery = true,
+    testMode,
+    limitProducts,
+    limitCategories,
+    skipImages,
 }, signal) {
     let result = createInitialResult();
+    const testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories, skipImages });
 
     try {
         const scraperResponse = await runCategoryScraper({
@@ -119,6 +125,7 @@ async function _runCategoryScraper({
             categoryDelay,
             collection,
             useAutoDiscovery,
+            ...testOptions,
             signal: normalizeCancelSignal(signal),  // ← propagado al ScraperRunner
         });
         result = { ...result, ...scraperResponse };

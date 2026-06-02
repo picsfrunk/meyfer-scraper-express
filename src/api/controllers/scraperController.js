@@ -44,7 +44,7 @@ function buildAcceptedResponse(enqueueResult, scraperName) {
 
 const sitemapScraperController = async (req, res) => {
     try {
-        const { sitemapSource, limitProducts, pageDelay, webhookUrl } = req.body;
+        const { sitemapSource, limitProducts, pageDelay, webhookUrl, testMode, limitCategories, skipImages } = req.body;
         const collection = req.collection;
 
         const enqueueResult = await ScraperService.sitemapScraper({
@@ -53,6 +53,9 @@ const sitemapScraperController = async (req, res) => {
             pageDelay,
             webhookUrl,
             collection,
+            testMode,
+            limitCategories,
+            skipImages,
         });
 
         const body = buildAcceptedResponse(enqueueResult, 'Sitemap scraper');
@@ -64,6 +67,9 @@ const sitemapScraperController = async (req, res) => {
             position: enqueueResult.position,
             sitemapSource,
             limitProducts,
+            testMode,
+            limitCategories,
+            skipImages,
             pageDelay,
             webhookUrl: !!webhookUrl,
             collection: collection.collectionName,
@@ -79,7 +85,7 @@ const sitemapScraperController = async (req, res) => {
 
 const categoryScraperController = async (req, res) => {
     try {
-        const { categoryIds, pageDelay, categoryDelay, webhookUrl, useAutoDiscovery = true } = req.body;
+        const { categoryIds, pageDelay, categoryDelay, webhookUrl, useAutoDiscovery = true, testMode, limitProducts, limitCategories, skipImages } = req.body;
         const collection = req.collection;
 
         const enqueueResult = await ScraperService.categoryScraper({
@@ -89,6 +95,10 @@ const categoryScraperController = async (req, res) => {
             webhookUrl,
             collection,
             useAutoDiscovery,
+            testMode,
+            limitProducts,
+            limitCategories,
+            skipImages,
         });
 
         const body = buildAcceptedResponse(enqueueResult, 'Category scraper');
@@ -102,6 +112,10 @@ const categoryScraperController = async (req, res) => {
             pageDelay,
             categoryDelay,
             useAutoDiscovery,
+            testMode,
+            limitProducts,
+            limitCategories,
+            skipImages,
             webhookUrl: !!webhookUrl,
             collection: collection.collectionName,
         });

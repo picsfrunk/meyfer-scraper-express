@@ -47,6 +47,8 @@ Opciones:
   --product-ids=1027,1673   Audita IDs puntuales. Por defecto usa los 19 productos del issue #57.
   --all-missing=true        Audita todos los productos del sitemap ausentes en Mongo.
   --category-ids=all        Limita rubros, igual que CategoryProductStrategy.
+  --limit-products=20       Limita productos recolectados desde páginas de categoría.
+  --limit-categories=1      Limita rubros recorridos por CategoryProductStrategy.
   --auto-discovery=false    Usa src/config/rubros.js en vez de categorías descubiertas.
   --refresh-sitemap=true    Reanaliza SITEMAP_URL antes de comparar cobertura.
   --page-delay=250          Delay en ms entre validaciones de detalle/API.
@@ -74,6 +76,8 @@ async function main() {
         targetProductIds: productIds,
         targetProducts,
         pageDelay: Number(readArg('page-delay') || 0),
+        limitProducts: readArg('limit-products'),
+        limitCategories: readArg('limit-categories'),
         includeMongo: !readBooleanArg('no-mongo', false),
         forceRefreshSitemap: readBooleanArg('refresh-sitemap', false),
     });

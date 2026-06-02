@@ -145,6 +145,44 @@ function normalizeTargetProducts(value) {
         .filter(Boolean);
 }
 
+function normalizePositiveInteger(value) {
+    if (value === null || value === undefined || value === '') return null;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return null;
+
+    const integerValue = Math.floor(numberValue);
+    return integerValue > 0 ? integerValue : null;
+}
+
+function normalizeBoolean(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value === 'string') {
+        return ['1', 'true', 'yes', 'y', 'si', 'sí'].includes(value.toLowerCase());
+    }
+    return defaultValue;
+}
+
+function normalizeTestModeOptions({
+    testMode = false,
+    limitProducts = null,
+    limitCategories = null,
+    skipImages = false,
+} = {}) {
+    const normalizedLimitProducts = normalizePositiveInteger(limitProducts);
+    const normalizedLimitCategories = normalizePositiveInteger(limitCategories);
+    const normalizedSkipImages = normalizeBoolean(skipImages, false);
+    const explicitTestMode = normalizeBoolean(testMode, false);
+
+    return {
+        testMode: explicitTestMode || Boolean(normalizedLimitProducts || normalizedLimitCategories),
+        limitProducts: normalizedLimitProducts,
+        limitCategories: normalizedLimitCategories,
+        skipImages: normalizedSkipImages,
+    };
+}
+
 function categoryAuditLog(event, payload = {}) {
     console.log(`[category-audit] ${event} ${JSON.stringify(payload)}`);
 }
@@ -186,9 +224,11 @@ function extractBrand(displayName) {
     return brandMatch ? brandMatch[1].trim() : 'generico';
 }
 
-async function processProductData({ customProductId, productApiData, imageUrl, categoryId, categoryName, profitMargin, sourceUrl, brand, existingImageUrl }) {
+async function processProductData({ customProductId, productApiData, imageUrl, categoryId, categoryName, profitMargin, sourceUrl, brand, existingImageUrl, skipImages = false }) {
     try {
-        const cloudinaryImageUrl = await processProductImage(imageUrl, customProductId, existingImageUrl);
+        const cloudinaryImageUrl = skipImages
+            ? (existingImageUrl || imageUrl || null)
+            : await processProductImage(imageUrl, customProductId, existingImageUrl);
         const productBrand = brand || extractBrand(productApiData.display_name);
         const finalPrice = productApiData.list_price * (1 + profitMargin);
 
@@ -395,10 +435,12 @@ async function getDiscoveredCategories({ forceRefresh = false } = {}) {
 // ============================================================
 
 class CategoryProductStrategy {
-    constructor({ categoryIds = 'all', useAutoDiscovery = true } = {}) {
+    constructor({ categoryIds = 'all', useAutoDiscovery = true, testMode, limitProducts, limitCategories, skipImages } = {}) {
         this.categoryIds = categoryIds;
         this.useAutoDiscovery = useAutoDiscovery;
         this.brandsCache = null;
+        this.testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories, skipImages });
+        this.productLimitLogged = false;
     }
 
     async _loadBrands() {
@@ -456,13 +498,27 @@ class CategoryProductStrategy {
             throw new Error(`No se encontraron rubros válidos para los IDs proporcionados: ${JSON.stringify(this.categoryIds)}`);
         }
 
+        if (this.testOptions.limitCategories && rubrosToProcess.length > this.testOptions.limitCategories) {
+            console.log(`[test-mode] category limit applied before=${rubrosToProcess.length} after=${this.testOptions.limitCategories}`);
+            rubrosToProcess = rubrosToProcess.slice(0, this.testOptions.limitCategories);
+        }
+
         log(`📋 Estrategia Category: Procesando ${rubrosToProcess.length} rubros.`);
 
         const productList = [];
         for (const rubro of rubrosToProcess) {
             for (let page = 1; page <= rubro.pages; page++) {
+                if (this.testOptions.limitProducts && productList.length >= this.testOptions.limitProducts) break;
+
                 const products = await this._fetchProducts(rubro.id, page, rubro.slug);
-                products.forEach(p => {
+                const remaining = this.testOptions.limitProducts
+                    ? this.testOptions.limitProducts - productList.length
+                    : products.length;
+                if (this.testOptions.limitProducts && products.length > remaining && !this.productLimitLogged) {
+                    console.log(`[test-mode] product limit applied before=${productList.length + products.length} after=${this.testOptions.limitProducts}`);
+                    this.productLimitLogged = true;
+                }
+                products.slice(0, remaining).forEach(p => {
                     productList.push({
                         ...p,
                         categoryId: rubro.id,
@@ -471,6 +527,8 @@ class CategoryProductStrategy {
                     });
                 });
             }
+
+            if (this.testOptions.limitProducts && productList.length >= this.testOptions.limitProducts) break;
         }
 
         return productList;
@@ -524,9 +582,9 @@ class CategoryProductStrategy {
 }
 
 class SitemapProductStrategy {
-    constructor({ sitemapSource = null, limitProducts = null } = {}) {
+    constructor({ sitemapSource = null, testMode, limitProducts = null, limitCategories, skipImages } = {}) {
         this.sitemapSource = sitemapSource;
-        this.limitProducts = limitProducts;
+        this.testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories, skipImages });
         this.categoriesMap = null;
     }
 
@@ -551,7 +609,10 @@ class SitemapProductStrategy {
             });
         }
 
-        const selectedUrls = this.limitProducts ? urls.slice(0, this.limitProducts) : urls;
+        const selectedUrls = this.testOptions.limitProducts ? urls.slice(0, this.testOptions.limitProducts) : urls;
+        if (selectedUrls.length !== urls.length) {
+            console.log(`[test-mode] product limit applied before=${urls.length} after=${selectedUrls.length}`);
+        }
 
         return selectedUrls.map(url => {
             const templateMatch = url.match(/-(\d+)$/);
@@ -580,7 +641,7 @@ class SitemapProductStrategy {
     }
 
     getName() {
-        return `Sitemap Scraper${this.limitProducts ? ` (Limit: ${this.limitProducts})` : ''}`;
+        return `Sitemap Scraper${this.testOptions.limitProducts ? ` (Limit: ${this.testOptions.limitProducts})` : ''}`;
     }
 }
 
@@ -589,15 +650,20 @@ class SitemapProductStrategy {
 // ============================================================
 
 class ScraperRunner {
-    constructor({ strategy, collection, pageDelay, categoryDelay, signal }) {
+    constructor({ strategy, collection, pageDelay, categoryDelay, signal, testMode, limitProducts, limitCategories, skipImages }) {
         this.strategy = strategy;
         this.collection = collection;
         this.pageDelay = pageDelay || config.pageDelay;
         this.profitMargin = 1;
         this.existingImagesMap = new Map();
+        this.testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories, skipImages });
         // signal: objeto { cancelled: false } compartido con scraperQueue.
         // cancelJob() lo muta a { cancelled: true } para interrumpir el loop.
         this.signal = signal ?? null;
+    }
+
+    _isCancelled() {
+        return Boolean(this.signal?.cancelled || this.signal?.canceled);
     }
 
     async initialize() {
@@ -621,8 +687,19 @@ class ScraperRunner {
         const startTime = Date.now();
         await this.initialize();
 
-        const products = await this.strategy.getProductList();
+        let products = await this.strategy.getProductList();
+        const totalCandidates = products.length;
+        if (this.testOptions.limitProducts && products.length > this.testOptions.limitProducts) {
+            console.log(`[test-mode] product limit applied before=${products.length} after=${this.testOptions.limitProducts}`);
+            products = products.slice(0, this.testOptions.limitProducts);
+        }
+
         let total = 0, uploaded = 0, errors = 0, orphansDeleted = 0;
+        let processed = 0;
+
+        if (this.testOptions.testMode || this.testOptions.limitProducts || this.testOptions.limitCategories || this.testOptions.skipImages) {
+            console.log(`[test-mode] enabled limitProducts=${this.testOptions.limitProducts || 'none'} limitCategories=${this.testOptions.limitCategories || 'none'} skipImages=${this.testOptions.skipImages}`);
+        }
 
         log(`🚀 Iniciando ejecución: ${this.strategy.getName()} - ${products.length} productos detectados.`);
 
@@ -634,7 +711,7 @@ class ScraperRunner {
             // ── Chequeo de cancelación ──────────────────────────────────
             // Si cancelJob() activó el signal, hacer flush del batch parcial
             // y salir del loop limpiamente antes de procesar el siguiente producto.
-            if (this.signal?.cancelled) {
+            if (this._isCancelled()) {
                 log('\n🛑 Cancelación solicitada — deteniendo scraper.');
                 if (batch.length > 0) {
                     await this.collection.bulkWrite(batch, { ordered: false });
@@ -647,6 +724,7 @@ class ScraperRunner {
             // ────────────────────────────────────────────────────────────
 
             const product = products[i];
+            processed++;
 
             const details = await this._fetchAndProcessProduct(product);
 
@@ -661,7 +739,7 @@ class ScraperRunner {
                     }
                 });
 
-                if (details.image_url?.includes('cloudinary.com')) uploaded++;
+                if (!this.testOptions.skipImages && details.image_url?.includes('cloudinary.com')) uploaded++;
 
                 this.existingImagesMap.set(String(details.product_id), details.image_url);
             } else {
@@ -684,9 +762,10 @@ class ScraperRunner {
         // Solo se ejecuta en corridas completas (categoryIds === 'all') y cuando
         // el scraper NO fue cancelado (una corrida cancelada es parcial por definición).
         const isFullRun = !this.strategy.categoryIds || this.strategy.categoryIds === 'all';
-        const wasCancelled = this.signal?.cancelled ?? false;
+        const wasCancelled = this._isCancelled();
+        const isLimitedRun = Boolean(this.testOptions.limitProducts || this.testOptions.limitCategories);
 
-        if (isFullRun && !wasCancelled) {
+        if (isFullRun && !wasCancelled && !isLimitedRun) {
             const orphanIds = [...this.existingImagesMap.keys()].filter(id => !scrapedIds.has(id));
 
             if (orphanIds.length) {
@@ -699,6 +778,8 @@ class ScraperRunner {
             }
         } else if (wasCancelled) {
             log('⚠️  Corrida cancelada: limpieza de huérfanos omitida.');
+        } else if (isLimitedRun) {
+            log('⚠️  Corrida limitada/test: limpieza de huérfanos omitida para evitar falsos positivos.');
         } else {
             log('⚠️  Corrida parcial: limpieza de huérfanos omitida para evitar falsos positivos.');
         }
@@ -718,6 +799,12 @@ class ScraperRunner {
                 errors: errors,
                 orphansDeleted: orphansDeleted,
                 cancelled: wasCancelled,
+                testMode: this.testOptions.testMode,
+                limitProducts: this.testOptions.limitProducts,
+                limitCategories: this.testOptions.limitCategories,
+                skipImages: this.testOptions.skipImages,
+                totalCandidates,
+                limitedCandidates: products.length,
                 duration: totalTime,
                 durationFormatted: formatTime(totalTime)
             }
@@ -732,7 +819,20 @@ class ScraperRunner {
             console.log('='.repeat(60) + '\n');
         }
 
-        return { total, errors, uploaded, orphansDeleted, processed: products.length, duration: totalTime };
+        return {
+            total,
+            errors,
+            uploaded,
+            orphansDeleted,
+            processed,
+            duration: totalTime,
+            testMode: this.testOptions.testMode,
+            limitProducts: this.testOptions.limitProducts,
+            limitCategories: this.testOptions.limitCategories,
+            skipImages: this.testOptions.skipImages,
+            totalCandidates,
+            limitedCandidates: products.length,
+        };
     }
 
     async _fetchAndProcessProduct(product) {
@@ -770,6 +870,7 @@ class ScraperRunner {
                 sourceUrl: product.sourceUrl,
                 brand: product.brand || null,
                 existingImageUrl,
+                skipImages: this.testOptions.skipImages,
             });
         } catch (err) {
             log(`❌ Error detalle ${product.product_template_id}: ${err.message}`);
@@ -788,6 +889,9 @@ async function auditCategoryCoverage({
     targetProductIds = [],
     targetProducts = [],
     pageDelay = 0,
+    testMode = false,
+    limitProducts = null,
+    limitCategories = null,
     collection = null,
     includeMongo = true,
     forceRefreshSitemap = false,
@@ -829,7 +933,14 @@ async function auditCategoryCoverage({
         source: sitemapDoc.source,
     });
 
-    const strategy = new CategoryProductStrategy({ categoryIds, useAutoDiscovery });
+    const testOptions = normalizeTestModeOptions({ testMode, limitProducts, limitCategories });
+    const strategy = new CategoryProductStrategy({
+        categoryIds,
+        useAutoDiscovery,
+        testMode: testOptions.testMode,
+        limitProducts: testOptions.limitProducts,
+        limitCategories: testOptions.limitCategories,
+    });
     const categoryProducts = await strategy.getProductList();
 
     const categoryByTemplateId = new Map();
@@ -1008,6 +1119,9 @@ async function auditCategoryCoverage({
             targetProductsNotInSitemap,
             statusCounts,
         },
+        testMode: testOptions.testMode,
+        limitProducts: testOptions.limitProducts,
+        limitCategories: testOptions.limitCategories,
         sitemapNotInCategoryPages,
         sitemapNotInMongo: missingInMongo,
         mongoNotInSitemap,
@@ -1030,5 +1144,6 @@ module.exports = {
     runCategoryScraper: async (opts) => new ScraperRunner({ ...opts, strategy: new CategoryProductStrategy(opts) }).run(),
     runSitemapScraper:  async (opts) => new ScraperRunner({ ...opts, strategy: new SitemapProductStrategy(opts) }).run(),
     auditCategoryCoverage,
+    normalizeTestModeOptions,
     CategoryProductStrategy, SitemapProductStrategy, ScraperRunner
 };
