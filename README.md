@@ -76,7 +76,11 @@ GLOBAL_SITEMAP_LIMIT=100
 #### Webhooks
 ```env
 WEBHOOK_URL=http://tu-backend.com/webhook/scraper-result
+SCRAPER_WEBHOOK_SECRET=change-me
 ```
+
+`SCRAPER_WEBHOOK_SECRET` se envia en los webhooks al backend con el header `X-Webhook-Secret`.
+Debe configurarse tambien en el backend con exactamente el mismo valor antes de activar la validacion en endpoints publicos de webhook.
 
 #### Servidor
 ```env
@@ -2445,6 +2449,7 @@ SITEMAP_URL=http://web.com/sitemap.xml
 
 # Webhook (opcional)
 WEBHOOK_URL=http://backend.com/webhook/scraper-result
+SCRAPER_WEBHOOK_SECRET=change-me
 
 # Servidor
 PORT=3001

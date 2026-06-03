@@ -2,6 +2,7 @@ const axios     = require('axios');
 const logToFile = require('../../utils/logToFile');
 const { checkPrices } = require('../../scraper/priceChecker');
 const { enqueue, JOB_TYPES } = require('./scraperQueue');
+const { buildWebhookRequestConfig } = require('./webhookService');
 
 // ──────────────────────────────────────────────────────────────────────────
 // HANDLER INTERNO
@@ -50,7 +51,7 @@ async function runPriceCheck({ webhookUrl } = {}) {
 
 async function _notifyWebhook(webhookUrl, payload) {
     try {
-        await axios.post(webhookUrl, { ...payload, timestamp: new Date().toISOString() });
+        await axios.post(webhookUrl, { ...payload, timestamp: new Date().toISOString() }, buildWebhookRequestConfig());
         await logToFile.info('Webhook de price check enviado', 'priceCheckerService', { status: payload.status });
     } catch (err) {
         await logToFile.error(`Error enviando webhook de price check: ${err.message}`, 'priceCheckerService');

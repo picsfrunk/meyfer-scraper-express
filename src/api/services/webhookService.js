@@ -1,5 +1,33 @@
 const axios = require('axios');
 
+let missingSecretWarningLogged = false;
+
+function isProductionLikeEnvironment() {
+    const environment = process.env.NODE_ENV || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT;
+    return ['production', 'staging'].includes(String(environment || '').toLowerCase());
+}
+
+function buildWebhookRequestConfig(config = {}) {
+    const secret = process.env.SCRAPER_WEBHOOK_SECRET;
+
+    if (!secret) {
+        if (isProductionLikeEnvironment() && !missingSecretWarningLogged) {
+            missingSecretWarningLogged = true;
+            console.warn('[webhookService] SCRAPER_WEBHOOK_SECRET no esta configurado; el backend puede rechazar webhooks protegidos con 401.');
+        }
+
+        return config;
+    }
+
+    return {
+        ...config,
+        headers: {
+            ...(config.headers || {}),
+            'X-Webhook-Secret': secret,
+        },
+    };
+}
+
 /**
  * Envía un webhook al backend app.
  *
@@ -114,11 +142,11 @@ async function notifyWebhook({
     }
 
     try {
-        await axios.post(webhookUrl, payload);
+        await axios.post(webhookUrl, payload, buildWebhookRequestConfig());
         console.log(`[webhookService] Webhook enviado → event:${payload.event ?? '-'} source:${source} status:${status}`);
     } catch (err) {
         console.error('[webhookService] Error notificando al webhook:', err.message);
     }
 }
 
-module.exports = { notifyWebhook };
+module.exports = { notifyWebhook, buildWebhookRequestConfig };
