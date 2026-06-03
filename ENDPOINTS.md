@@ -348,6 +348,8 @@ Todos los endpoints de inicio de jobs retornan `202 Accepted` con la misma estru
 ## Webhooks
 
 Si se envía `webhookUrl` en el body, el scraper notifica el ciclo de vida del job con `POST` a esa URL.
+Si `SCRAPER_WEBHOOK_SECRET` está configurado, todos los webhooks server-to-server al backend incluyen el header `X-Webhook-Secret`.
+Ese valor debe coincidir exactamente con el secreto configurado en el backend.
 
 ### Eventos del ciclo de vida (desde `scraperQueue`)
 
