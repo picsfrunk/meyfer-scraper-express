@@ -14,13 +14,11 @@ app.use(morgan('dev'));
 
 // Database
 const { getScrapedCollection } = require('./database/mongo');
-const { startPriceListImportWorker } = require('./api/services/priceListImportWorkerService');
 let db_collection = null
 getScrapedCollection()
     .then( (mongo_collection) => {
             db_collection = mongo_collection;
             console.log('🟢 Conectado a MongoDB');
-            startPriceListImportWorker();
         })
     .catch( (err) => {
             console.error('🔴 Error al conectar a MongoDB', err);

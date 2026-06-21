@@ -16,6 +16,7 @@ const JOB_TYPES = {
     CATEGORY:              'categoryScraper',
     ANALYZE:               'sitemapAnalysis',
     PRICE_CHECK:           'priceCheck',
+    PRICE_LIST_IMPORT:     'priceListImport',
     CATEGORIES_RESTORE:    'categoriesRestore',
     CATEGORIES_REORGANIZE: 'categoriesReorganize',
 };
@@ -242,6 +243,14 @@ function _sanitizeResult(result, jobType) {
         return {
             summary:    result.summary ?? null,
             durationMs: result.summary?.durationMs ?? result.durationMs ?? null,
+        };
+    }
+
+    if (jobType === JOB_TYPES.PRICE_LIST_IMPORT) {
+        return {
+            backendJobId: result.backendJobId ?? null,
+            summary:      result.summary      ?? null,
+            durationMs:   result.durationMs   ?? null,
         };
     }
 

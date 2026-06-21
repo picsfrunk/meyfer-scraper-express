@@ -7,9 +7,9 @@ const { URL } = require('url');
 const mongo = require('../../database/mongo');
 const logToFile = require('../../utils/logToFile');
 const { buildWebhookRequestConfig } = require('./webhookService');
+const { enqueue, JOB_TYPES } = require('./scraperQueue');
 
-const MODULE = 'priceListImportWorker';
-const DEFAULT_POLL_INTERVAL_MS = 30_000;
+const MODULE = 'priceListImportService';
 const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_REPORTED_ERRORS = 100;
 const DIRECT_CONTENT_TYPES = [
@@ -19,9 +19,6 @@ const DIRECT_CONTENT_TYPES = [
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/octet-stream',
 ];
-
-let workerTimer = null;
-let workerRunning = false;
 
 function getBackendBaseUrl() {
     const value = process.env.BACKEND_API_URL
@@ -37,17 +34,6 @@ function buildWorkerUrl(pathname) {
         throw new Error('BACKEND_API_URL no esta configurada');
     }
     return `${baseUrl}/api/webhook/price-list-import${pathname}`;
-}
-
-function getPollIntervalMs() {
-    const parsed = parseInt(process.env.PRICE_LIST_IMPORT_POLL_INTERVAL_MS || '', 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_POLL_INTERVAL_MS;
-}
-
-function isWorkerEnabled() {
-    const explicit = String(process.env.PRICE_LIST_IMPORT_WORKER_ENABLED || '').toLowerCase();
-    if (['false', '0', 'no'].includes(explicit)) return false;
-    return Boolean(getBackendBaseUrl() && process.env.SCRAPER_WEBHOOK_SECRET);
 }
 
 function getAxiosConfig(config = {}) {
@@ -361,13 +347,6 @@ async function applyPriceEntries(entries, rowErrors, { collection, profitMargin 
     };
 }
 
-async function fetchNextJob() {
-    const response = await axios.get(buildWorkerUrl('/jobs/next'), getAxiosConfig({
-        validateStatus: (status) => status === 200 || status === 204,
-    }));
-    return response.status === 204 ? null : response.data?.job || null;
-}
-
 async function claimJob(jobId) {
     const response = await axios.post(buildWorkerUrl(`/jobs/${encodeURIComponent(jobId)}/claim`), {}, getAxiosConfig());
     return response.data?.job;
@@ -472,35 +451,40 @@ async function processPriceListImportJob(job, options = {}) {
     };
 }
 
-async function runPriceListImportWorkerOnce() {
-    const job = await fetchNextJob();
-    if (!job) return { processed: false };
+async function runPriceListImportJobById(jobId, options = {}) {
+    if (!jobId) throw new Error('jobId requerido para price-list-import');
 
-    await logToFile.info('Job de importacion de lista encontrado', MODULE, {
-        jobId: job.jobId,
-        source: job.source,
-    });
+    await logToFile.info('Job de importacion de lista recibido', MODULE, { jobId });
 
-    let claimedJob;
+    let claimedJob = null;
     try {
-        claimedJob = await claimJob(job.jobId);
+        claimedJob = options.job || await claimJob(jobId);
+        await logToFile.info('Job de importacion de lista reclamado', MODULE, {
+            jobId,
+            source: claimedJob?.source,
+        });
     } catch (error) {
-        await logToFile.warn(`No se pudo reclamar job ${job.jobId}: ${error.message}`, MODULE, {
-            jobId: job.jobId,
+        await logToFile.warn(`No se pudo reclamar job ${jobId}: ${error.message}`, MODULE, {
+            jobId,
             status: error.response?.status,
             details: error.response?.data,
         });
-        return { processed: false, skipped: true };
+        throw error;
     }
 
     try {
-        const payload = await processPriceListImportJob(claimedJob || job);
-        await reportJob(job.jobId, payload);
+        const startedMs = Date.now();
+        const payload = await processPriceListImportJob(claimedJob, options);
+        await reportJob(jobId, payload);
         await logToFile.info('Job de importacion de lista completado', MODULE, {
-            jobId: job.jobId,
+            jobId,
             summary: payload.summary,
         });
-        return { processed: true, jobId: job.jobId, summary: payload.summary };
+        return {
+            backendJobId: jobId,
+            summary: payload.summary,
+            durationMs: Date.now() - startedMs,
+        };
     } catch (error) {
         const payload = {
             status: 'failed',
@@ -514,64 +498,35 @@ async function runPriceListImportWorkerOnce() {
         };
 
         try {
-            await reportJob(job.jobId, payload);
+            await reportJob(jobId, payload);
         } catch (reportError) {
             await logToFile.error(`Error reportando fallo de importacion: ${reportError.message}`, MODULE, {
-                jobId: job.jobId,
+                jobId,
                 details: reportError.response?.data,
             });
         }
 
         await logToFile.error(`Job de importacion de lista fallo: ${error.message}`, MODULE, {
-            jobId: job.jobId,
+            jobId,
             stack: error.stack,
         });
-        return { processed: true, jobId: job.jobId, error: error.message };
+        throw error;
     }
 }
 
-async function pollWorker() {
-    if (workerRunning) return;
-    workerRunning = true;
-    try {
-        await runPriceListImportWorkerOnce();
-    } catch (error) {
-        await logToFile.error(`Error en polling de price-list-import: ${error.message}`, MODULE, {
-            stack: error.stack,
-        });
-    } finally {
-        workerRunning = false;
-    }
-}
+async function runPriceListImport({ jobId } = {}) {
+    if (!jobId) throw new Error('jobId requerido para price-list-import');
 
-function startPriceListImportWorker() {
-    if (workerTimer || !isWorkerEnabled()) {
-        if (!workerTimer && !getBackendBaseUrl()) {
-            console.log('[priceListImportWorker] BACKEND_API_URL no configurada; worker deshabilitado.');
-        } else if (!workerTimer && !process.env.SCRAPER_WEBHOOK_SECRET) {
-            console.log('[priceListImportWorker] SCRAPER_WEBHOOK_SECRET no configurado; worker deshabilitado.');
-        }
-        return false;
-    }
-
-    const intervalMs = getPollIntervalMs();
-    console.log(`[priceListImportWorker] Worker habilitado. Poll cada ${intervalMs}ms.`);
-    pollWorker();
-    workerTimer = setInterval(pollWorker, intervalMs);
-    return true;
-}
-
-function stopPriceListImportWorker() {
-    if (workerTimer) {
-        clearInterval(workerTimer);
-        workerTimer = null;
-    }
+    return enqueue({
+        type: JOB_TYPES.PRICE_LIST_IMPORT,
+        params: { jobId },
+        handler: ({ jobId: backendJobId }) => runPriceListImportJobById(backendJobId),
+    });
 }
 
 module.exports = {
-    startPriceListImportWorker,
-    stopPriceListImportWorker,
-    runPriceListImportWorkerOnce,
+    runPriceListImport,
+    runPriceListImportJobById,
     processPriceListImportJob,
     parsePriceListBuffer,
     normalizePrice,

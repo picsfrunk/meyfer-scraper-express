@@ -4,9 +4,11 @@ const writeXlsxFile = require('write-excel-file/node');
 const {
     parsePriceListBuffer,
     processPriceListImportJob,
+    runPriceListImportJobById,
     getProfitMargin,
-} = require('../src/api/services/priceListImportWorkerService');
+} = require('../src/api/services/priceListImportService');
 const mongo = require('../src/database/mongo');
+const axios = require('axios');
 
 class MockCollection {
     constructor(products) {
@@ -152,13 +154,70 @@ async function testMissingOrInvalidProfitMarginFails() {
     }
 }
 
+async function testRunSingleJobClaimsProcessesAndReports() {
+    const originalPost = axios.post;
+    const originalPatch = axios.patch;
+
+    const buffer = await buildXlsxBuffer([
+        ['Codigo', 'Precio'],
+        ['0442', 10],
+    ]);
+    const collection = new MockCollection([
+        { product_id: '0442', list_price: 1, final_price: 2 },
+    ]);
+
+    const calls = [];
+    process.env.BACKEND_API_URL = 'http://backend.test';
+
+    try {
+        axios.post = async (url) => {
+            calls.push(['post', url]);
+            assert.strictEqual(url, 'http://backend.test/api/webhook/price-list-import/jobs/job-123/claim');
+            return {
+                data: {
+                    job: {
+                        jobId: 'job-123',
+                        source: 'manual_upload',
+                        fileId: 'file-1',
+                    },
+                },
+            };
+        };
+
+        axios.patch = async (url, payload) => {
+            calls.push(['patch', url, payload]);
+            assert.strictEqual(url, 'http://backend.test/api/webhook/price-list-import/jobs/job-123');
+            assert.strictEqual(payload.status, 'completed');
+            assert.strictEqual(payload.summary.updatedProducts, 1);
+            return { data: {} };
+        };
+
+        const result = await runPriceListImportJobById('job-123', {
+            collection,
+            profitMargin: 1,
+            file: {
+                buffer,
+                metadata: { extension: '.xlsx', originalName: 'prices.xlsx' },
+            },
+        });
+
+        assert.strictEqual(result.backendJobId, 'job-123');
+        assert.strictEqual(result.summary.updatedProducts, 1);
+        assert.deepStrictEqual(calls.map(([method]) => method), ['post', 'patch']);
+    } finally {
+        axios.post = originalPost;
+        axios.patch = originalPatch;
+    }
+}
+
 async function run() {
     await testXlsxImportSummary();
     await testCsvParsing();
     await testSupplierCodeHeaderOnFourthRowPadsNumericCodes();
     await testInvalidFile();
     await testMissingOrInvalidProfitMarginFails();
-    console.log('priceListImportWorker tests passed');
+    await testRunSingleJobClaimsProcessesAndReports();
+    console.log('priceListImport tests passed');
 }
 
 run().catch((error) => {

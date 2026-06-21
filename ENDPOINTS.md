@@ -11,6 +11,7 @@ Base path: `/scraper` (montado en `admin.routes.js`)
 - [POST /scraper/sitemap/analysis](#post-scrapersitemapanalysis)
 - [GET /scraper/status](#get-scraperstatus)
 - [POST /scraper/check-prices](#post-scrapercheck-prices)
+- [POST /scraper/price-list-import/process/:jobId](#post-scraperprice-list-importprocessjobid)
 - [DELETE /scraper/jobs/:jobId](#delete-scraperjobsjobid)
 - [DELETE /scraper/jobs/all](#delete-scraperjobsall)
 - [Modelo de respuesta 202](#modelo-de-respuesta-202)
@@ -216,6 +217,40 @@ Compara precios actuales de Odoo contra los almacenados en MongoDB y detecta cam
 ```
 
 > Al terminar, si se configuró `webhookUrl`, el webhook recibe el detalle completo con los productos que cambiaron de precio (`changed`), los nuevos (`newIds`) y los eliminados (`removedIds`).
+
+---
+
+## POST /scraper/price-list-import/process/:jobId
+
+Dispara un import puntual de lista de precios para un job creado previamente por el backend. Pasa por la misma cola que scraping y price check para no ejecutar procesos pesados en paralelo.
+
+### Parámetros de ruta
+
+| Parámetro | Descripción |
+|---|---|
+| `jobId` | ID del job `price-list-import` creado por el backend |
+
+### Respuesta `202 Accepted`
+
+```json
+{
+  "status": "accepted",
+  "jobId": "priceListImport-1718000000000-5",
+  "message": "Price list import iniciado.",
+  "queue": {
+    "pending": 0,
+    "position": 0,
+    "running": { "id": "priceListImport-1718000000000-5", "type": "priceListImport", "startedAt": "2024-06-10T12:20:00.000Z", "elapsedMs": 0 }
+  }
+}
+```
+
+### Flujo
+
+1. Reclama el job contra el backend con `POST /api/webhook/price-list-import/jobs/:jobId/claim`.
+2. Obtiene el archivo si el source es `manual_upload`.
+3. Intenta descargar el archivo solo si el source es `remote_configured_url` y parece una URL directa CSV/XLSX.
+4. Procesa CSV/XLSX, actualiza precios de productos existentes y reporta `completed` o `failed` al backend.
 
 ---
 
