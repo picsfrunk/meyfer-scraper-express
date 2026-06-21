@@ -19,7 +19,7 @@ router.post('/categories/reorganize',       scraperController.reorganizeCategori
 router.post('/check-prices', checkPricesController);
 
 // ── Price list import ──────────────────────────────────────────────────────
-router.post('/price-list-import/process/:jobId', processPriceListImportController);
+router.post('/price-list-import', processPriceListImportController);
 
 // ── Job cancellation ───────────────────────────────────────────────────────
 // IMPORTANT: /jobs/all must be registered before /jobs/:jobId to prevent

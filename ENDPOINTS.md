@@ -11,7 +11,7 @@ Base path: `/scraper` (montado en `admin.routes.js`)
 - [POST /scraper/sitemap/analysis](#post-scrapersitemapanalysis)
 - [GET /scraper/status](#get-scraperstatus)
 - [POST /scraper/check-prices](#post-scrapercheck-prices)
-- [POST /scraper/price-list-import/process/:jobId](#post-scraperprice-list-importprocessjobid)
+- [POST /scraper/price-list-import](#post-scraperprice-list-import)
 - [DELETE /scraper/jobs/:jobId](#delete-scraperjobsjobid)
 - [DELETE /scraper/jobs/all](#delete-scraperjobsall)
 - [Modelo de respuesta 202](#modelo-de-respuesta-202)
@@ -220,15 +220,32 @@ Compara precios actuales de Odoo contra los almacenados en MongoDB y detecta cam
 
 ---
 
-## POST /scraper/price-list-import/process/:jobId
+## POST /scraper/price-list-import
 
-Dispara un import puntual de lista de precios para un job creado previamente por el backend. Pasa por la misma cola que scraping y price check para no ejecutar procesos pesados en paralelo.
+Dispara un import puntual de lista de precios. El scraper crea el `jobId` operativo, igual que category scraper, sitemap scraper y price check. Pasa por la misma cola para no ejecutar procesos pesados en paralelo.
 
-### Parámetros de ruta
+### Body
 
-| Parámetro | Descripción |
-|---|---|
-| `jobId` | ID del job `price-list-import` creado por el backend |
+```json
+{
+  "source": "manual_upload",
+  "fileId": "file_123",
+  "metadata": { "originalName": "lista.xlsx" },
+  "webhookUrl": "https://mi-backend.com/api/webhook/scraper",
+  "backendImportJobId": "opcional-para-traza",
+  "requestId": "opcional-para-traza"
+}
+```
+
+| Campo | Tipo | Requerido | Descripción |
+|---|---|---|---|
+| `source` | `manual_upload \| remote_configured_url` | ✅ | Origen del archivo |
+| `fileId` | `string` | ✅ si `manual_upload` | Archivo ya recibido por el backend; el scraper lo descarga desde el backend |
+| `sourceUrl` | `string` | ✅ si `remote_configured_url` | URL directa CSV/XLSX; no se automatizan Odoo Documents/Spreadsheet interactivos |
+| `metadata` | `object` | ❌ | Metadata auxiliar del archivo |
+| `webhookUrl` | `string` | ❌ | URL para recibir eventos de ciclo de vida y resultado del job |
+| `backendImportJobId` | `string` | ❌ | ID de trazabilidad del backend; no es el id operativo del scraper |
+| `requestId` | `string` | ❌ | ID de correlación opcional |
 
 ### Respuesta `202 Accepted`
 
@@ -247,10 +264,12 @@ Dispara un import puntual de lista de precios para un job creado previamente por
 
 ### Flujo
 
-1. Reclama el job contra el backend con `POST /api/webhook/price-list-import/jobs/:jobId/claim`.
-2. Obtiene el archivo si el source es `manual_upload`.
-3. Intenta descargar el archivo solo si el source es `remote_configured_url` y parece una URL directa CSV/XLSX.
-4. Procesa CSV/XLSX, actualiza precios de productos existentes y reporta `completed` o `failed` al backend.
+1. Backend/Admin llama al scraper con los datos del import.
+2. El scraper crea el `jobId` operativo y lo devuelve en la respuesta `202`.
+3. El backend puede guardar ese `jobId` para consultar `/scraper/status`.
+4. Si el source es `manual_upload`, el scraper obtiene el archivo con `GET /api/webhook/price-list-import/files/:fileId`.
+5. Si el source es `remote_configured_url`, intenta descargar solo si parece una URL directa CSV/XLSX.
+6. Procesa CSV/XLSX, actualiza precios de productos existentes y expone el resultado en el historial de la cola y/o `webhookUrl`.
 
 ---
 

@@ -500,7 +500,35 @@ Content-Type: application/json
 
 ---
 
-### 5. Cancelar Job por ID
+### 5. Importar Lista de Precios
+
+#### `POST /api/scraper/price-list-import`
+
+Ejecuta un import puntual de lista de precios. El backend no crea el id operativo del proceso: llama al scraper con los datos del archivo, el scraper crea el `jobId` en su cola interna y lo devuelve en la respuesta `202 Accepted`, igual que los demás procesos.
+
+**Request Body**
+```json
+{
+  "source": "manual_upload",
+  "fileId": "file_123",
+  "metadata": { "originalName": "lista.xlsx" },
+  "webhookUrl": "http://backend.com/webhook/scraper-result",
+  "backendImportJobId": "opcional-para-traza",
+  "requestId": "opcional-para-traza"
+}
+```
+
+Para `remote_configured_url`, enviar `sourceUrl` con una URL directa CSV/XLSX. No se automatizan Odoo Documents/Spreadsheet interactivos.
+
+**Contrato de integración**
+1. Backend/Admin solicita el import al scraper.
+2. Scraper responde con `jobId`, generado internamente.
+3. Backend puede guardar ese `jobId` para consultar estado o correlacionarlo con su propio `backendImportJobId`/`requestId`.
+4. El resultado queda disponible en `/api/scraper/status` y en `webhookUrl` si se envía.
+
+---
+
+### 6. Cancelar Job por ID
 
 #### `DELETE /api/scraper/jobs/:jobId`
 

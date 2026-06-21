@@ -4,11 +4,12 @@ const writeXlsxFile = require('write-excel-file/node');
 const {
     parsePriceListBuffer,
     processPriceListImportJob,
-    runPriceListImportJobById,
+    runPriceListImport,
     getProfitMargin,
 } = require('../src/api/services/priceListImportService');
+const { createProcessPriceListImportController } = require('../src/api/controllers/priceListImportController');
 const mongo = require('../src/database/mongo');
-const axios = require('axios');
+const logToFile = require('../src/utils/logToFile');
 
 class MockCollection {
     constructor(products) {
@@ -37,6 +38,23 @@ async function buildXlsxBuffer(rows) {
     const file = await writeXlsxFile(data, { buffer: true });
     const buffer = typeof file.toBuffer === 'function' ? await file.toBuffer() : file;
     return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+}
+
+async function waitFor(assertion, timeoutMs = 1000) {
+    const startedAt = Date.now();
+    let lastError = null;
+
+    while (Date.now() - startedAt < timeoutMs) {
+        try {
+            assertion();
+            return;
+        } catch (error) {
+            lastError = error;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+    }
+
+    throw lastError;
 }
 
 async function testXlsxImportSummary() {
@@ -154,10 +172,8 @@ async function testMissingOrInvalidProfitMarginFails() {
     }
 }
 
-async function testRunSingleJobClaimsProcessesAndReports() {
-    const originalPost = axios.post;
-    const originalPatch = axios.patch;
-
+async function testRunPriceListImportCreatesScraperJobId() {
+    const originalInfo = logToFile.info;
     const buffer = await buildXlsxBuffer([
         ['Codigo', 'Precio'],
         ['0442', 10],
@@ -166,47 +182,97 @@ async function testRunSingleJobClaimsProcessesAndReports() {
         { product_id: '0442', list_price: 1, final_price: 2 },
     ]);
 
-    const calls = [];
-    process.env.BACKEND_API_URL = 'http://backend.test';
+    try {
+        logToFile.info = async () => {};
+
+        const enqueueResult = await runPriceListImport(
+            {
+                source: 'manual_upload',
+                fileId: 'file-1',
+                metadata: { originalName: 'prices.xlsx' },
+                backendImportJobId: 'backend-trace-1',
+            },
+            {
+                collection,
+                profitMargin: 1,
+                file: {
+                    buffer,
+                    metadata: { extension: '.xlsx', originalName: 'prices.xlsx' },
+                },
+            }
+        );
+
+        assert.match(enqueueResult.jobId, /^priceListImport-\d+-\d+$/);
+        assert.strictEqual(enqueueResult.queued, false);
+        assert.strictEqual(enqueueResult.position, 0);
+
+        await waitFor(() => {
+            assert.strictEqual(collection.products.get('0442').list_price, 10);
+            assert.strictEqual(collection.products.get('0442').final_price, 20);
+        });
+    } finally {
+        logToFile.info = originalInfo;
+    }
+}
+
+async function testEndpointReturnsGeneratedScraperJobIdWithoutUrlJobId() {
+    const originalInfo = logToFile.info;
+    let receivedParams = null;
+    const controller = createProcessPriceListImportController(async (params) => {
+        receivedParams = params;
+        return {
+            jobId: 'priceListImport-123-1',
+            queued: false,
+            position: 0,
+            queueSnapshot: {
+                running: {
+                    id: 'priceListImport-123-1',
+                    type: 'priceListImport',
+                    startedAt: new Date().toISOString(),
+                    elapsedMs: 0,
+                },
+            },
+        };
+    });
+
+    const req = {
+        params: {},
+        body: {
+            source: 'manual_upload',
+            fileId: 'file-1',
+            metadata: { originalName: 'prices.xlsx' },
+            backendImportJobId: 'backend-trace-1',
+            requestId: 'request-1',
+        },
+    };
+    const res = {
+        statusCode: null,
+        body: null,
+        headersSent: false,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            this.headersSent = true;
+            return this;
+        },
+    };
 
     try {
-        axios.post = async (url) => {
-            calls.push(['post', url]);
-            assert.strictEqual(url, 'http://backend.test/api/webhook/price-list-import/jobs/job-123/claim');
-            return {
-                data: {
-                    job: {
-                        jobId: 'job-123',
-                        source: 'manual_upload',
-                        fileId: 'file-1',
-                    },
-                },
-            };
-        };
+        logToFile.info = async () => {};
+        await controller(req, res);
 
-        axios.patch = async (url, payload) => {
-            calls.push(['patch', url, payload]);
-            assert.strictEqual(url, 'http://backend.test/api/webhook/price-list-import/jobs/job-123');
-            assert.strictEqual(payload.status, 'completed');
-            assert.strictEqual(payload.summary.updatedProducts, 1);
-            return { data: {} };
-        };
-
-        const result = await runPriceListImportJobById('job-123', {
-            collection,
-            profitMargin: 1,
-            file: {
-                buffer,
-                metadata: { extension: '.xlsx', originalName: 'prices.xlsx' },
-            },
-        });
-
-        assert.strictEqual(result.backendJobId, 'job-123');
-        assert.strictEqual(result.summary.updatedProducts, 1);
-        assert.deepStrictEqual(calls.map(([method]) => method), ['post', 'patch']);
+        assert.strictEqual(res.statusCode, 202);
+        assert.strictEqual(res.body.jobId, 'priceListImport-123-1');
+        assert.strictEqual(res.body.status, 'accepted');
+        assert.strictEqual(receivedParams.source, 'manual_upload');
+        assert.strictEqual(receivedParams.fileId, 'file-1');
+        assert.strictEqual(receivedParams.backendImportJobId, 'backend-trace-1');
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(req.params, 'jobId'), false);
     } finally {
-        axios.post = originalPost;
-        axios.patch = originalPatch;
+        logToFile.info = originalInfo;
     }
 }
 
@@ -216,7 +282,8 @@ async function run() {
     await testSupplierCodeHeaderOnFourthRowPadsNumericCodes();
     await testInvalidFile();
     await testMissingOrInvalidProfitMarginFails();
-    await testRunSingleJobClaimsProcessesAndReports();
+    await testRunPriceListImportCreatesScraperJobId();
+    await testEndpointReturnsGeneratedScraperJobIdWithoutUrlJobId();
     console.log('priceListImport tests passed');
 }
 

@@ -22,8 +22,7 @@ const DIRECT_CONTENT_TYPES = [
 
 function getBackendBaseUrl() {
     const value = process.env.BACKEND_API_URL
-        || process.env.BACKEND_URL
-        || process.env.PRICE_LIST_IMPORT_BACKEND_URL;
+        || process.env.BACKEND_URL;
 
     return value ? value.replace(/\/+$/, '') : null;
 }
@@ -347,15 +346,6 @@ async function applyPriceEntries(entries, rowErrors, { collection, profitMargin 
     };
 }
 
-async function claimJob(jobId) {
-    const response = await axios.post(buildWorkerUrl(`/jobs/${encodeURIComponent(jobId)}/claim`), {}, getAxiosConfig());
-    return response.data?.job;
-}
-
-async function reportJob(jobId, payload) {
-    await axios.patch(buildWorkerUrl(`/jobs/${encodeURIComponent(jobId)}`), payload, getAxiosConfig());
-}
-
 async function fetchManualUploadFile(fileId) {
     const response = await axios.get(buildWorkerUrl(`/files/${encodeURIComponent(fileId)}`), getAxiosConfig());
     const file = response.data;
@@ -445,88 +435,91 @@ async function processPriceListImportJob(job, options = {}) {
         result: {
             ...applied.result,
             source: job.source,
+            backendImportJobId: job.backendImportJobId || null,
+            requestId: job.requestId || null,
             startedAt,
             finishedAt,
         },
     };
 }
 
-async function runPriceListImportJobById(jobId, options = {}) {
-    if (!jobId) throw new Error('jobId requerido para price-list-import');
-
-    await logToFile.info('Job de importacion de lista recibido', MODULE, { jobId });
-
-    let claimedJob = null;
-    try {
-        claimedJob = options.job || await claimJob(jobId);
-        await logToFile.info('Job de importacion de lista reclamado', MODULE, {
-            jobId,
-            source: claimedJob?.source,
-        });
-    } catch (error) {
-        await logToFile.warn(`No se pudo reclamar job ${jobId}: ${error.message}`, MODULE, {
-            jobId,
-            status: error.response?.status,
-            details: error.response?.data,
-        });
+function validatePriceListImportRequest(params = {}) {
+    if (!['manual_upload', 'remote_configured_url'].includes(params.source)) {
+        const error = new Error('source debe ser manual_upload o remote_configured_url');
+        error.statusCode = 400;
         throw error;
     }
 
-    try {
-        const startedMs = Date.now();
-        const payload = await processPriceListImportJob(claimedJob, options);
-        await reportJob(jobId, payload);
-        await logToFile.info('Job de importacion de lista completado', MODULE, {
-            jobId,
-            summary: payload.summary,
-        });
-        return {
-            backendJobId: jobId,
-            summary: payload.summary,
-            durationMs: Date.now() - startedMs,
-        };
-    } catch (error) {
-        const payload = {
-            status: 'failed',
-            summary: buildEmptySummary(),
-            errors: [{ error: error.message }],
-            result: { error: error.message },
-            details: {
-                message: error.message,
-                stack: process.env.NODE_ENV === 'production' ? undefined : error.stack,
-            },
-        };
+    if (params.source === 'manual_upload' && !params.fileId) {
+        const error = new Error('fileId requerido para manual_upload');
+        error.statusCode = 400;
+        throw error;
+    }
 
-        try {
-            await reportJob(jobId, payload);
-        } catch (reportError) {
-            await logToFile.error(`Error reportando fallo de importacion: ${reportError.message}`, MODULE, {
-                jobId,
-                details: reportError.response?.data,
-            });
-        }
-
-        await logToFile.error(`Job de importacion de lista fallo: ${error.message}`, MODULE, {
-            jobId,
-            stack: error.stack,
-        });
+    if (params.source === 'remote_configured_url' && !params.sourceUrl) {
+        const error = new Error('sourceUrl requerido para remote_configured_url');
+        error.statusCode = 400;
         throw error;
     }
 }
 
-async function runPriceListImport({ jobId } = {}) {
-    if (!jobId) throw new Error('jobId requerido para price-list-import');
+function buildPriceListImportParams(params = {}) {
+    validatePriceListImportRequest(params);
+
+    return {
+        source: params.source,
+        fileId: params.fileId || null,
+        sourceUrl: params.sourceUrl || null,
+        metadata: params.metadata || null,
+        webhookUrl: params.webhookUrl || null,
+        backendImportJobId: params.backendImportJobId || null,
+        requestId: params.requestId || null,
+    };
+}
+
+async function runPriceListImportJob(params, options = {}) {
+    const startedMs = Date.now();
+
+    await logToFile.info('Job de importacion de lista recibido', MODULE, {
+        source: params.source,
+        fileId: params.fileId || null,
+        sourceUrl: params.sourceUrl || null,
+        backendImportJobId: params.backendImportJobId || null,
+        requestId: params.requestId || null,
+    });
+
+    const payload = await processPriceListImportJob(params, options);
+
+    await logToFile.info('Job de importacion de lista completado', MODULE, {
+        summary: payload.summary,
+        backendImportJobId: params.backendImportJobId || null,
+        requestId: params.requestId || null,
+    });
+
+    return {
+        backendImportJobId: params.backendImportJobId || null,
+        requestId: params.requestId || null,
+        summary: payload.summary,
+        errors: payload.errors,
+        result: payload.result,
+        durationMs: Date.now() - startedMs,
+    };
+}
+
+async function runPriceListImport(params = {}, options = {}) {
+    const jobParams = buildPriceListImportParams(params);
 
     return enqueue({
         type: JOB_TYPES.PRICE_LIST_IMPORT,
-        params: { jobId },
-        handler: ({ jobId: backendJobId }) => runPriceListImportJobById(backendJobId),
+        params: jobParams,
+        handler: (queuedParams) => runPriceListImportJob(queuedParams, options),
     });
 }
 
 module.exports = {
     runPriceListImport,
-    runPriceListImportJobById,
+    runPriceListImportJob,
+    buildPriceListImportParams,
     processPriceListImportJob,
     parsePriceListBuffer,
     normalizePrice,

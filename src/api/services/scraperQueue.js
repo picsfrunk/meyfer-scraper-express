@@ -248,9 +248,10 @@ function _sanitizeResult(result, jobType) {
 
     if (jobType === JOB_TYPES.PRICE_LIST_IMPORT) {
         return {
-            backendJobId: result.backendJobId ?? null,
-            summary:      result.summary      ?? null,
-            durationMs:   result.durationMs   ?? null,
+            backendImportJobId: result.backendImportJobId ?? null,
+            requestId:          result.requestId          ?? null,
+            summary:            result.summary            ?? null,
+            durationMs:         result.durationMs         ?? null,
         };
     }
 
