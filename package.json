@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node src/server.js",
     "audit:category-coverage": "node scripts/audit-category-coverage.js",
-    "test": "node tests/test_price_list_import_worker.js"
+    "test": "node tests/test_price_list_import.js"
   },
   "dependencies": {
     "axios": "^1.13.4",

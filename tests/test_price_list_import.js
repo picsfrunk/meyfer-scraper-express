@@ -4,9 +4,12 @@ const writeXlsxFile = require('write-excel-file/node');
 const {
     parsePriceListBuffer,
     processPriceListImportJob,
+    runPriceListImport,
     getProfitMargin,
-} = require('../src/api/services/priceListImportWorkerService');
+} = require('../src/api/services/priceListImportService');
+const { createProcessPriceListImportController } = require('../src/api/controllers/priceListImportController');
 const mongo = require('../src/database/mongo');
+const logToFile = require('../src/utils/logToFile');
 
 class MockCollection {
     constructor(products) {
@@ -35,6 +38,23 @@ async function buildXlsxBuffer(rows) {
     const file = await writeXlsxFile(data, { buffer: true });
     const buffer = typeof file.toBuffer === 'function' ? await file.toBuffer() : file;
     return Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+}
+
+async function waitFor(assertion, timeoutMs = 1000) {
+    const startedAt = Date.now();
+    let lastError = null;
+
+    while (Date.now() - startedAt < timeoutMs) {
+        try {
+            assertion();
+            return;
+        } catch (error) {
+            lastError = error;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+    }
+
+    throw lastError;
 }
 
 async function testXlsxImportSummary() {
@@ -152,13 +172,119 @@ async function testMissingOrInvalidProfitMarginFails() {
     }
 }
 
+async function testRunPriceListImportCreatesScraperJobId() {
+    const originalInfo = logToFile.info;
+    const buffer = await buildXlsxBuffer([
+        ['Codigo', 'Precio'],
+        ['0442', 10],
+    ]);
+    const collection = new MockCollection([
+        { product_id: '0442', list_price: 1, final_price: 2 },
+    ]);
+
+    try {
+        logToFile.info = async () => {};
+
+        const enqueueResult = await runPriceListImport(
+            {
+                source: 'manual_upload',
+                fileId: 'file-1',
+                metadata: { originalName: 'prices.xlsx' },
+                backendImportJobId: 'backend-trace-1',
+            },
+            {
+                collection,
+                profitMargin: 1,
+                file: {
+                    buffer,
+                    metadata: { extension: '.xlsx', originalName: 'prices.xlsx' },
+                },
+            }
+        );
+
+        assert.match(enqueueResult.jobId, /^priceListImport-\d+-\d+$/);
+        assert.strictEqual(enqueueResult.queued, false);
+        assert.strictEqual(enqueueResult.position, 0);
+
+        await waitFor(() => {
+            assert.strictEqual(collection.products.get('0442').list_price, 10);
+            assert.strictEqual(collection.products.get('0442').final_price, 20);
+        });
+    } finally {
+        logToFile.info = originalInfo;
+    }
+}
+
+async function testEndpointReturnsGeneratedScraperJobIdWithoutUrlJobId() {
+    const originalInfo = logToFile.info;
+    let receivedParams = null;
+    const controller = createProcessPriceListImportController(async (params) => {
+        receivedParams = params;
+        return {
+            jobId: 'priceListImport-123-1',
+            queued: false,
+            position: 0,
+            queueSnapshot: {
+                running: {
+                    id: 'priceListImport-123-1',
+                    type: 'priceListImport',
+                    startedAt: new Date().toISOString(),
+                    elapsedMs: 0,
+                },
+            },
+        };
+    });
+
+    const req = {
+        params: {},
+        body: {
+            source: 'manual_upload',
+            fileId: 'file-1',
+            metadata: { originalName: 'prices.xlsx' },
+            backendImportJobId: 'backend-trace-1',
+            requestId: 'request-1',
+        },
+    };
+    const res = {
+        statusCode: null,
+        body: null,
+        headersSent: false,
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        json(payload) {
+            this.body = payload;
+            this.headersSent = true;
+            return this;
+        },
+    };
+
+    try {
+        logToFile.info = async () => {};
+        await controller(req, res);
+
+        assert.strictEqual(res.statusCode, 202);
+        assert.strictEqual(res.body.jobId, 'priceListImport-123-1');
+        assert.strictEqual(res.body.status, 'accepted');
+        assert.strictEqual(receivedParams.source, 'manual_upload');
+        assert.strictEqual(receivedParams.fileId, 'file-1');
+        assert.strictEqual(receivedParams.backendImportJobId, 'backend-trace-1');
+        assert.strictEqual(Object.prototype.hasOwnProperty.call(req.params, 'jobId'), false);
+    } finally {
+        logToFile.info = originalInfo;
+    }
+}
+
 async function run() {
     await testXlsxImportSummary();
     await testCsvParsing();
     await testSupplierCodeHeaderOnFourthRowPadsNumericCodes();
     await testInvalidFile();
     await testMissingOrInvalidProfitMarginFails();
-    console.log('priceListImportWorker tests passed');
+    await testRunPriceListImportCreatesScraperJobId();
+    await testEndpointReturnsGeneratedScraperJobIdWithoutUrlJobId();
+    console.log('priceListImport tests passed');
 }
 
 run().catch((error) => {
